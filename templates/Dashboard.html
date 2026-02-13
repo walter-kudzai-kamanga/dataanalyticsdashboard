@@ -117,14 +117,68 @@ body{background:var(--bg);font-size:15px;color:var(--ink)}
 
 <div id="dataAdmin" class="card p-3 mb-3" style="display:none">
 <div class="fw-semibold mb-2">Data Management</div>
-<div class="row g-2 align-items-end">
-  <div class="col-md-4">
-    <label class="form-label">Upload CSV</label>
-    <input id="csvInput" type="file" accept=".csv" class="form-control" />
+
+<div class="mb-3">
+  <label class="form-label">Upload Excel/CSV File</label>
+  <div class="input-group">
+    <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" class="form-control" />
+    <select id="uploadDomain" class="form-select" style="max-width:150px">
+      <option value="dashboard">Dashboard</option>
+      <option value="labour">Labour</option>
+      <option value="accounts">Accounts</option>
+      <option value="prices">Prices</option>
+      <option value="trade">Trade</option>
+    </select>
+    <button id="previewBtn" class="btn btn-outline-primary">Preview</button>
+    <button id="uploadBtn" class="btn btn-success">Upload</button>
   </div>
-  <div class="col-md-8 d-flex gap-2">
-    <button id="addRowBtn" class="btn btn-sm btn-outline-success">Create record</button>
-    <button id="deleteFilteredBtn" class="btn btn-sm btn-outline-danger">Delete filtered</button>
+  <div class="small text-muted mt-1">Supports Excel (.xlsx, .xls) with multiple sheets and CSV files</div>
+</div>
+
+<div id="previewArea" class="mb-3" style="display:none">
+  <div class="card p-3 bg-light">
+    <div class="fw-semibold mb-2">File Preview</div>
+    <div id="previewContent"></div>
+    <div class="mt-2">
+      <label class="form-label small">Select Sheet (for Excel files):</label>
+      <select id="sheetSelect" class="form-select form-select-sm"></select>
+    </div>
+  </div>
+</div>
+
+<div id="uploadStatus" class="alert" style="display:none"></div>
+
+<div class="mb-3">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <div class="fw-semibold">Uploaded Files</div>
+    <button id="refreshUploadsBtn" class="btn btn-sm btn-outline-secondary">Refresh</button>
+  </div>
+  <div id="uploadsList" class="table-responsive" style="max-height:300px;overflow-y:auto">
+    <table class="table table-sm table-hover">
+      <thead class="table-light sticky-top">
+        <tr>
+          <th>Filename</th>
+          <th>Domain</th>
+          <th>Sheet</th>
+          <th>Rows</th>
+          <th>Columns</th>
+          <th>Uploaded</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="uploadsTableBody">
+        <tr><td colspan="7" class="text-center text-muted">No uploads yet</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="row g-2">
+  <div class="col-md-6">
+    <button id="addRowBtn" class="btn btn-sm btn-outline-success w-100">Create Record</button>
+  </div>
+  <div class="col-md-6">
+    <button id="deleteFilteredBtn" class="btn btn-sm btn-outline-danger w-100">Delete Filtered</button>
   </div>
 </div>
 <div class="small text-muted mt-2">All operations are executed by the backend API.</div>
@@ -149,6 +203,7 @@ function applyAccessUI(){
     dataAdmin.style.display='block';
     logoutBtn.style.display='inline-block';
     loginOpenBtn.style.display='none';
+    loadUploadsList();
   }else{
     dataAdmin.style.display='none';
     logoutBtn.style.display='none';
@@ -328,13 +383,113 @@ deleteFilteredBtn.onclick=async()=>{
   refreshDashboard();
 };
 
-csvInput.onchange=async e=>{
+let previewData=null;
+
+previewBtn.onclick=async()=>{
   if(currentUser.role==='Viewer') return alert('Login required');
-  const f=e.target.files[0]; if(!f)return;
+  const f=fileInput.files[0]; if(!f)return;
   const fd=new FormData(); fd.append('file',f);
-  await fetch('/api/data/upload',{method:'POST',body:fd});
-  refreshDashboard();
+  try{
+    const res=await fetch('/api/data/upload/preview',{method:'POST',body:fd});
+    const data=await res.json();
+    if(data.error){alert(data.error);return;}
+    previewData=data;
+    previewArea.style.display='block';
+    previewContent.innerHTML='';
+    const sheets=Object.keys(data.sheets);
+    sheetSelect.innerHTML='';
+    sheets.forEach(sheet=>{
+      const info=data.sheets[sheet];
+      sheetSelect.add(new Option(`${sheet} (${info.total_rows} rows)`,sheet));
+      const div=document.createElement('div');
+      div.className='mb-3';
+      div.innerHTML=`<strong>${sheet}:</strong> ${info.columns.length} columns, ${info.total_rows} rows<br>
+        <small class="text-muted">Columns: ${info.columns.slice(0,5).join(', ')}${info.columns.length>5?'...':''}</small>`;
+      previewContent.appendChild(div);
+    });
+    if(sheets.length===1) sheetSelect.style.display='none';
+    else sheetSelect.style.display='block';
+  }catch(e){alert('Preview failed: '+e.message);}
 };
+
+uploadBtn.onclick=async()=>{
+  if(currentUser.role==='Viewer') return alert('Login required');
+  const f=fileInput.files[0]; if(!f){alert('Please select a file');return;}
+  const domain=uploadDomain.value;
+  const sheet=sheetSelect.value||null;
+  const fd=new FormData();
+  fd.append('file',f);
+  fd.append('domain',domain);
+  if(sheet) fd.append('sheet_name',sheet);
+  fd.append('create_table','true');
+  
+  uploadStatus.style.display='block';
+  uploadStatus.className='alert alert-info';
+  uploadStatus.textContent='Uploading...';
+  
+  try{
+    const res=await fetch('/api/data/upload',{method:'POST',body:fd});
+    const data=await res.json();
+    if(data.error){
+      uploadStatus.className='alert alert-danger';
+      uploadStatus.textContent='Error: '+data.error;
+      return;
+    }
+    uploadStatus.className='alert alert-success';
+    uploadStatus.textContent=`Successfully uploaded ${data.total_sheets} sheet(s). ${data.results.map(r=>`${r.rows} rows`).join(', ')}`;
+    previewArea.style.display='none';
+    fileInput.value='';
+    loadUploadsList();
+    setTimeout(()=>refreshDashboard(),500);
+  }catch(e){
+    uploadStatus.className='alert alert-danger';
+    uploadStatus.textContent='Upload failed: '+e.message;
+  }
+};
+
+refreshUploadsBtn.onclick=loadUploadsList;
+
+async function loadUploadsList(){
+  if(currentUser.role==='Viewer') return;
+  try{
+    const res=await fetch('/api/data/uploads');
+    const data=await res.json();
+    if(data.error){console.error(data.error);return;}
+    const tbody=uploadsTableBody;
+    tbody.innerHTML='';
+    if(data.uploads.length===0){
+      tbody.innerHTML='<tr><td colspan="7" class="text-center text-muted">No uploads yet</td></tr>';
+      return;
+    }
+    data.uploads.forEach(upload=>{
+      const tr=document.createElement('tr');
+      const date=new Date(upload.upload_time);
+      tr.innerHTML=`
+        <td>${upload.filename}</td>
+        <td><span class="badge bg-secondary">${upload.domain}</span></td>
+        <td>${upload.sheet_name||'N/A'}</td>
+        <td>${upload.rows_count||0}</td>
+        <td>${upload.columns_count||0}</td>
+        <td><small>${date.toLocaleDateString()}</small></td>
+        <td><button class="btn btn-sm btn-outline-danger" onclick="deleteUpload(${upload.id})">Delete</button></td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }catch(e){console.error('Failed to load uploads:',e);}
+}
+
+async function deleteUpload(id){
+  if(!confirm('Delete this upload and its table?')) return;
+  try{
+    const res=await fetch(`/api/data/upload/${id}`,{method:'DELETE'});
+    const data=await res.json();
+    if(data.error){alert(data.error);return;}
+    loadUploadsList();
+    refreshDashboard();
+  }catch(e){alert('Delete failed: '+e.message);}
+}
+
+// loadUploadsList will be called by applyAccessUI when admin logs in
 
 // ---------------- MAP ----------------
 const map=L.map('map').setView([-19,29.5],6);

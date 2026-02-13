@@ -38,9 +38,12 @@ def query_db(query, args=(), one=False):
     return (rv[0] if rv else None) if one else rv
 
 def execute_db(query, args=()):
-    cur = get_db().execute(query, args)
-    get_db().commit()
+    conn = get_db()
+    cur = conn.execute(query, args)
+    conn.commit()
+    last_id = cur.lastrowid
     cur.close()
+    return last_id
 
 # ----------------------------------------------------------------------
 # Ensure uploads table exists (direct connection)
@@ -53,7 +56,26 @@ def init_db():
             domain TEXT NOT NULL,
             upload_time TIMESTAMP NOT NULL,
             filename TEXT,
-            data_json TEXT NOT NULL
+            data_json TEXT NOT NULL,
+            table_name TEXT,
+            sheet_name TEXT,
+            rows_count INTEGER,
+            columns_count INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS upload_metadata (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            upload_id INTEGER,
+            table_name TEXT NOT NULL,
+            sheet_name TEXT,
+            domain TEXT,
+            filename TEXT,
+            upload_time TIMESTAMP,
+            rows_count INTEGER,
+            columns_count INTEGER,
+            columns_info TEXT,
+            FOREIGN KEY (upload_id) REFERENCES data_uploads(id)
         )
     """)
     conn.commit()
@@ -129,12 +151,23 @@ def query_labour_kpis(filters):
         # Check if this is the WIDE table with Male/Female columns
         if 'Male' in cols and 'Female' in cols and 'Province' in cols:
             try:
-                # Sum Male + Female for total employed
+                # Apply filters
                 q = f'SELECT SUM("Male" + "Female") FROM "{tbl}"'
                 params = []
-                if region and 'Province' in cols:
-                    q = f'SELECT SUM("Male" + "Female") FROM "{tbl}" WHERE "Province" = ?'
+                conditions = []
+                
+                if region and region != 'All' and 'Province' in cols:
+                    conditions.append('"Province" = ?')
                     params.append(region)
+                
+                if gender and gender in ['Male', 'Female']:
+                    # Use only the specified gender column
+                    q = f'SELECT SUM("{gender}") FROM "{tbl}"'
+                    if conditions:
+                        q += ' WHERE ' + ' AND '.join(conditions)
+                elif conditions:
+                    q += ' WHERE ' + ' AND '.join(conditions)
+                
                 res = query_db(q, params, one=True)
                 if res and res[0]:
                     employed = safe_float(res[0])
@@ -148,22 +181,26 @@ def query_labour_kpis(filters):
         cols = guess_column_names(tbl)
         if 'Indicator' in cols and 'Value' in cols:
             try:
-                # Get total unemployed
-                q = f'SELECT SUM("Value") FROM "{tbl}" WHERE "Indicator" = ?'
+                # Build query with filters
+                conditions = ['"Indicator" = ?']
                 params = ['unemployed']
-                if region and 'Province' in cols:
-                    q = f'SELECT SUM("Value") FROM "{tbl}" WHERE "Indicator" = ? AND "Province" = ?'
+                
+                if region and region != 'All' and 'Province' in cols:
+                    conditions.append('"Province" = ?')
                     params.append(region)
+                
+                if gender and 'Sex' in cols:
+                    conditions.append('"Sex" = ?')
+                    params.append(gender.lower())
+                
+                q = f'SELECT SUM("Value") FROM "{tbl}" WHERE ' + ' AND '.join(conditions)
                 res = query_db(q, params, one=True)
                 if res and res[0]:
                     unemployed = safe_float(res[0])
 
-                # Get total labour force
-                q = f'SELECT SUM("Value") FROM "{tbl}" WHERE "Indicator" = ?'
-                params = ['labour_force']
-                if region and 'Province' in cols:
-                    q = f'SELECT SUM("Value") FROM "{tbl}" WHERE "Indicator" = ? AND "Province" = ?'
-                    params.append(region)
+                # Get total labour force with same filters
+                params[0] = 'labour_force'
+                q = f'SELECT SUM("Value") FROM "{tbl}" WHERE ' + ' AND '.join(conditions)
                 res = query_db(q, params, one=True)
                 if res and res[0]:
                     labour_force = safe_float(res[0])
@@ -189,6 +226,9 @@ def query_labour_kpis(filters):
 
 def query_labour_by_province(filters):
     """Employment by province (for donut chart)."""
+    region = filters.get('region')
+    gender = filters.get('gender')
+    
     tables = find_tables_by_keywords(['employment', 'province', 'sex'], mode='any')
     prov_data = {}
     for tbl in tables:
@@ -196,12 +236,23 @@ def query_labour_by_province(filters):
         # Look for WIDE table with Male/Female columns
         if 'Male' in cols and 'Female' in cols and 'Province' in cols:
             try:
-                rows = query_db(f'SELECT "Province", SUM("Male" + "Female") FROM "{tbl}" GROUP BY "Province"')
+                if gender and gender in ['Male', 'Female']:
+                    # Filter by gender
+                    rows = query_db(f'SELECT "Province", SUM("{gender}") FROM "{tbl}" GROUP BY "Province"')
+                else:
+                    # Sum both genders
+                    rows = query_db(f'SELECT "Province", SUM("Male" + "Female") FROM "{tbl}" GROUP BY "Province"')
+                
                 for r in rows:
                     prov = r[0]
                     val = safe_float(r[1])
                     if prov and val:
-                        prov_data[prov] = prov_data.get(prov, 0) + val
+                        # Apply region filter if specified
+                        if region and region != 'All':
+                            if prov == region:
+                                prov_data[prov] = prov_data.get(prov, 0) + val
+                        else:
+                            prov_data[prov] = prov_data.get(prov, 0) + val
                 break  # Found the right table
             except Exception as e:
                 continue
@@ -237,35 +288,58 @@ def query_gdp_kpis(filters):
         cols = guess_column_names(tbl)
         if 'Gdp At Market Prices Usd' in cols and 'Date' in cols:
             try:
+                # Apply region filter if specified
+                region = filters.get('region')
+                conditions = ['"Date" = ?', '"Gdp At Market Prices Usd" IS NOT NULL']
+                params = [year_float]
+                
+                if region and region != 'All' and 'Province' in cols:
+                    conditions.append('"Province" = ?')
+                    params.append(region)
+                
                 # Sum GDP for current year (check if data exists)
-                q = f'SELECT SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE "Date" = ? AND "Gdp At Market Prices Usd" IS NOT NULL'
-                res = query_db(q, [year_float], one=True)
+                q = f'SELECT SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE ' + ' AND '.join(conditions)
+                res = query_db(q, params, one=True)
                 if res and res[0]:
                     total_gdp = safe_float(res[0]) / 1e9  # convert to billions
                 else:
                     # Try to get most recent year with data
-                    q = f'SELECT MAX("Date") FROM "{tbl}" WHERE "Gdp At Market Prices Usd" IS NOT NULL'
-                    res = query_db(q, one=True)
+                    q_conditions = ['"Gdp At Market Prices Usd" IS NOT NULL']
+                    if region and region != 'All' and 'Province' in cols:
+                        q_conditions.append('"Province" = ?')
+                    q = f'SELECT MAX("Date") FROM "{tbl}" WHERE ' + ' AND '.join(q_conditions)
+                    res = query_db(q, [region] if region and region != 'All' else [], one=True)
                     if res and res[0]:
                         latest_year = float(res[0])
-                        q = f'SELECT SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE "Date" = ? AND "Gdp At Market Prices Usd" IS NOT NULL'
-                        res = query_db(q, [latest_year], one=True)
+                        params[0] = latest_year
+                        q = f'SELECT SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE ' + ' AND '.join(conditions)
+                        res = query_db(q, params, one=True)
                         if res and res[0]:
                             total_gdp = safe_float(res[0]) / 1e9
                             year_float = latest_year  # Update to use the year with data
                 
                 # Get per capita GDP
                 if 'Per Capita Gdp In Usd' in cols and total_gdp:
-                    q = f'SELECT AVG("Per Capita Gdp In Usd") FROM "{tbl}" WHERE "Date" = ? AND "Per Capita Gdp In Usd" IS NOT NULL'
-                    res = query_db(q, [year_float], one=True)
+                    q_conditions = ['"Date" = ?', '"Per Capita Gdp In Usd" IS NOT NULL']
+                    q_params = [year_float]
+                    if region and region != 'All' and 'Province' in cols:
+                        q_conditions.append('"Province" = ?')
+                        q_params.append(region)
+                    q = f'SELECT AVG("Per Capita Gdp In Usd") FROM "{tbl}" WHERE ' + ' AND '.join(q_conditions)
+                    res = query_db(q, q_params, one=True)
                     if res and res[0]:
                         per_capita = safe_float(res[0])
                 
                 # Previous year for growth
                 if total_gdp:
                     prev_year = year_float - 1
-                    q = f'SELECT SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE "Date" = ? AND "Gdp At Market Prices Usd" IS NOT NULL'
-                    res = query_db(q, [prev_year], one=True)
+                    prev_conditions = ['"Date" = ?', '"Gdp At Market Prices Usd" IS NOT NULL']
+                    prev_params = [prev_year]
+                    if region and region != 'All' and 'Province' in cols:
+                        prev_conditions.append('"Province" = ?')
+                        prev_params.append(region)
+                    q = f'SELECT SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE ' + ' AND '.join(prev_conditions)
+                    res = query_db(q, prev_params, one=True)
                     if res and res[0]:
                         prev_gdp = safe_float(res[0]) / 1e9
                 break
@@ -290,6 +364,9 @@ def query_gdp_kpis(filters):
 
 def query_gdp_by_sector(filters):
     """Sector composition of GDP."""
+    year = filters.get('year')
+    region = filters.get('region')
+    
     # Look for tables with sector/industry breakdown
     sector_tables = find_tables_by_keywords(['gdp', 'sector', 'industry'], mode='any')
     sector_data = {}
@@ -299,12 +376,31 @@ def query_gdp_by_sector(filters):
         sec_col = next((c for c in cols if any(x in c.lower() for x in ['sector', 'industry'])), None)
         if val_col and sec_col:
             try:
-                rows = query_db(f'SELECT "{sec_col}", SUM("{val_col}") FROM "{tbl}" GROUP BY "{sec_col}"')
+                # Build query with filters
+                conditions = []
+                params = []
+                
+                if year and 'Year' in cols:
+                    conditions.append('"Year" = ?')
+                    params.append(int(float(year)))
+                elif year and 'Date' in cols:
+                    conditions.append('"Date" = ?')
+                    params.append(float(year))
+                
+                if region and region != 'All' and 'Province' in cols:
+                    conditions.append('"Province" = ?')
+                    params.append(region)
+                
+                where_clause = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
+                q = f'SELECT "{sec_col}", SUM("{val_col}") FROM "{tbl}"{where_clause} GROUP BY "{sec_col}"'
+                rows = query_db(q, params)
                 for r in rows:
                     sec = r[0]
                     val = safe_float(r[1])
                     if sec and val:
                         sector_data[sec] = sector_data.get(sec, 0) + val
+                if sector_data:
+                    break
             except:
                 continue
     if sector_data:
@@ -321,6 +417,7 @@ def query_gdp_by_sector(filters):
 # ----------------------------------------------------------------------
 def query_cpi_kpis(filters):
     """CPI index, MoM, YoY inflation."""
+    year = filters.get('year')
     cpi_tables = find_tables_by_keywords(['cpi', 'inflation'], mode='any')
     cpi_value = None
     yoy_inflation = None
@@ -331,11 +428,20 @@ def query_cpi_kpis(filters):
         cols = guess_column_names(tbl)
         if 'Category' in cols and 'Item' in cols and 'Value' in cols:
             try:
-                # Get latest CPI all_items value
-                row = query_db(f'SELECT "Value" FROM "{tbl}" WHERE "Item" = ? ORDER BY "Category" DESC LIMIT 1', ['all_items'], one=True)
-                if row:
-                    cpi_value = safe_float(row['Value'])
-                    break
+                # Apply year filter if specified
+                if year:
+                    # Category might be year (e.g., "2024", "2025")
+                    row = query_db(f'SELECT "Value" FROM "{tbl}" WHERE "Item" = ? AND "Category" = ? ORDER BY "Category" DESC LIMIT 1', ['all_items', str(year)], one=True)
+                    if row:
+                        cpi_value = safe_float(row['Value'])
+                        break
+                
+                # Fallback: Get latest CPI all_items value
+                if cpi_value is None:
+                    row = query_db(f'SELECT "Value" FROM "{tbl}" WHERE "Item" = ? ORDER BY "Category" DESC LIMIT 1', ['all_items'], one=True)
+                    if row:
+                        cpi_value = safe_float(row['Value'])
+                        break
             except Exception as e:
                 continue
     
@@ -391,6 +497,7 @@ def query_cpi_kpis(filters):
 # ----------------------------------------------------------------------
 def query_trade_kpis(filters):
     """Exports, imports, balance."""
+    year = filters.get('year')
     trade_tables = find_tables_by_keywords(['trade', 'summary'], mode='any')
     exports = imports = None
 
@@ -399,12 +506,23 @@ def query_trade_kpis(filters):
         cols = guess_column_names(tbl)
         if 'Total.Exports' in cols and 'Imports' in cols:
             try:
-                # Get latest trade data
-                rows = query_db(f'SELECT "Total.Exports", "Imports" FROM "{tbl}" ORDER BY rowid DESC LIMIT 1', one=True)
-                if rows:
-                    exports = safe_float(rows['Total.Exports']) / 1e6  # convert to millions
-                    imports = safe_float(rows['Imports']) / 1e6
-                    break
+                # Apply year filter if Period column exists
+                if 'Period' in cols and year:
+                    # Try to match year in Period (e.g., "Jan-2023")
+                    year_str = str(year)
+                    rows = query_db(f'SELECT "Total.Exports", "Imports" FROM "{tbl}" WHERE "Period" LIKE ? ORDER BY "Period" DESC LIMIT 1', [f'%-{year_str}'], one=True)
+                    if rows:
+                        exports = safe_float(rows['Total.Exports']) / 1e6
+                        imports = safe_float(rows['Imports']) / 1e6
+                        break
+                
+                # Fallback: Get latest trade data
+                if exports is None:
+                    rows = query_db(f'SELECT "Total.Exports", "Imports" FROM "{tbl}" ORDER BY rowid DESC LIMIT 1', one=True)
+                    if rows:
+                        exports = safe_float(rows['Total.Exports']) / 1e6  # convert to millions
+                        imports = safe_float(rows['Imports']) / 1e6
+                        break
             except Exception as e:
                 continue
     
@@ -499,10 +617,15 @@ def query_imports_by_province():
 # Domain assemblers – now with real DB queries + fallback
 # ----------------------------------------------------------------------
 def get_dashboard_data(domain, filters):
-    # First check for uploaded data
+    # First check for uploaded data (JSON format - backward compatibility)
     uploaded = get_uploaded_data(domain)
     if uploaded:
         return _build_from_upload(domain, uploaded, filters)
+    
+    # Check for uploaded tables in database
+    uploaded_table = get_uploaded_table(domain, filters)
+    if uploaded_table:
+        return _build_from_uploaded_table(domain, uploaded_table, filters)
 
     # Otherwise fetch from database
     if domain == 'labour':
@@ -516,6 +639,155 @@ def get_dashboard_data(domain, filters):
     elif domain == 'dashboard':
         return assemble_overview(filters)
     else:
+        return fallback_data()
+
+def get_uploaded_table(domain, filters):
+    """Get the most recent uploaded table for a domain."""
+    row = query_db(
+        """SELECT table_name, columns_info FROM upload_metadata 
+           WHERE domain = ? ORDER BY upload_time DESC LIMIT 1""",
+        (domain,),
+        one=True
+    )
+    if row:
+        return {
+            'table_name': row['table_name'],
+            'columns_info': json.loads(row['columns_info']) if row['columns_info'] else {}
+        }
+    return None
+
+def _build_from_uploaded_table(domain, table_info, filters):
+    """Build dashboard data from uploaded database table."""
+    table_name = table_info['table_name']
+    columns_info = table_info.get('columns_info', {})
+    
+    try:
+        # Build query with filters
+        where_clauses = []
+        params = []
+        
+        search_term = filters.get('search', '').strip()
+        if search_term:
+            # Search across all text columns
+            text_cols = columns_info.get('categorical_columns', [])
+            if text_cols:
+                search_conditions = []
+                for col in text_cols[:3]:  # Limit to first 3 text columns
+                    col_clean = sanitize_table_name(str(col))
+                    search_conditions.append(f'"{col_clean}" LIKE ?')
+                    params.append(f'%{search_term}%')
+                if search_conditions:
+                    where_clauses.append('(' + ' OR '.join(search_conditions) + ')')
+        
+        # Apply year filter if Year column exists
+        year = filters.get('year')
+        if year:
+            try:
+                # Check if table has Year column
+                cols = guess_column_names(table_name)
+                year_cols = [c for c in cols if 'year' in c.lower()]
+                if year_cols:
+                    where_clauses.append(f'"{year_cols[0]}" = ?')
+                    params.append(int(float(year)))
+            except:
+                pass
+        
+        # Apply region filter if Province/Region column exists
+        region = filters.get('region')
+        if region and region != 'All':
+            try:
+                cols = guess_column_names(table_name)
+                region_cols = [c for c in cols if any(x in c.lower() for x in ['province', 'region', 'area'])]
+                if region_cols:
+                    where_clauses.append(f'"{region_cols[0]}" = ?')
+                    params.append(region)
+            except:
+                pass
+        
+        where_sql = ' WHERE ' + ' AND '.join(where_clauses) if where_clauses else ''
+        
+        # Get data
+        rows = query_db(f'SELECT * FROM "{table_name}"{where_sql} LIMIT 1000', tuple(params))
+        
+        if not rows:
+            return fallback_data()
+        
+        # Convert to DataFrame-like structure
+        df_data = []
+        for row in rows:
+            df_data.append(dict(row))
+        
+        # Build KPIs from numeric columns
+        numeric_cols = columns_info.get('numeric_columns', [])
+        kpis = []
+        for i, col in enumerate(numeric_cols[:8]):
+            try:
+                col_clean = sanitize_table_name(str(col))
+                total_row = query_db(f'SELECT SUM("{col_clean}") as total FROM "{table_name}"{where_sql}', tuple(params), one=True)
+                if total_row and total_row['total']:
+                    total = safe_float(total_row['total'])
+                    kpis.append({'label': col[:30], 'value': f'{total:,.0f}'})
+            except:
+                pass
+        
+        while len(kpis) < 4:
+            kpis.append({'label': 'No data', 'value': '0'})
+        
+        # Build charts
+        if numeric_cols:
+            col_clean = sanitize_table_name(str(numeric_cols[0]))
+            chart_data = query_db(f'SELECT "{col_clean}" FROM "{table_name}"{where_sql} ORDER BY rowid LIMIT 20', tuple(params))
+            main_chart = {
+                'title': f'{numeric_cols[0][:30]} Trend',
+                'type': 'line',
+                'labels': list(range(1, min(21, len(chart_data)+1))),
+                'data': [safe_float(r[col_clean]) for r in chart_data] if chart_data else []
+            }
+        else:
+            main_chart = {
+                'title': 'Data Overview',
+                'type': 'line',
+                'labels': [],
+                'data': []
+            }
+        
+        # Build side chart from categorical data
+        cat_cols = columns_info.get('categorical_columns', [])
+        if cat_cols:
+            col_clean = sanitize_table_name(str(cat_cols[0]))
+            cat_data = query_db(f'SELECT "{col_clean}", COUNT(*) as cnt FROM "{table_name}"{where_sql} GROUP BY "{col_clean}" ORDER BY cnt DESC LIMIT 5', tuple(params))
+            if cat_data:
+                side_chart = {
+                    'title': f'{cat_cols[0][:30]} Distribution',
+                    'type': 'doughnut',
+                    'labels': [str(r[col_clean]) for r in cat_data],
+                    'data': [r['cnt'] for r in cat_data]
+                }
+            else:
+                side_chart = {'title': 'No data', 'type': 'doughnut', 'labels': [], 'data': []}
+        else:
+            side_chart = {'title': 'No categorical data', 'type': 'doughnut', 'labels': ['No data'], 'data': [1]}
+        
+        # Build table
+        columns = list(df_data[0].keys()) if df_data else []
+        table_rows = df_data[:100]  # Limit to 100 rows for display
+        
+        insights = [
+            f"Uploaded data: {len(rows)} rows, {len(columns)} columns",
+            f"Table: {table_name}",
+            f"Numeric columns: {len(numeric_cols)}",
+            f"Categorical columns: {len(cat_cols)}"
+        ]
+        
+        return {
+            'kpis': kpis,
+            'charts': {'main': main_chart, 'side': side_chart, 'imports': None},
+            'table': {'columns': columns, 'rows': table_rows},
+            'insights': insights,
+            'title': f'{domain.title()} – Uploaded Data'
+        }
+        
+    except Exception as e:
         return fallback_data()
 
 def assemble_labour(filters):
@@ -769,7 +1041,7 @@ def assemble_prices(filters):
 def assemble_trade(filters):
     trade_data = query_trade_kpis(filters)
     imp_labels, imp_data = query_imports_by_province()
-    periods, exports_ts, imports_ts = query_trade_timeseries()
+    periods, exports_ts, imports_ts = query_trade_timeseries(filters)
     
     # Calculate trade metrics
     trade_deficit = abs(trade_data['balance']) if trade_data['balance'] < 0 else 0
@@ -975,23 +1247,71 @@ def query_gdp_timeseries():
     gdp_tables = find_tables_by_keywords(['gdp', 'provincial'], mode='any')
     years = []
     gdp_values = []
+    base_gdp_2020 = None
     
+    # First: Get 2020 actual GDP value from WIDE PROV GDP table
     for tbl in gdp_tables:
         cols = guess_column_names(tbl)
         if 'Gdp At Market Prices Usd' in cols and 'Date' in cols:
             try:
-                rows = query_db(f'SELECT "Date", SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE "Gdp At Market Prices Usd" IS NOT NULL GROUP BY "Date" ORDER BY "Date"')
-                for r in rows:
-                    years.append(str(int(r[0])))
-                    gdp_values.append(safe_float(r[1]) / 1e9)
-                break
+                row = query_db(f'SELECT SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE "Date" = 2020.0 AND "Gdp At Market Prices Usd" IS NOT NULL', one=True)
+                if row and row[0]:
+                    base_gdp_2020 = safe_float(row[0]) / 1e9  # Convert to billions
+                    break
             except:
                 continue
     
+    # Second: Use WIDE CURRENT PRICES GDP SHARES table - has data for all years
+    shares_table = None
+    for tbl in gdp_tables:
+        cols = guess_column_names(tbl)
+        if 'Year' in cols and 'Gdp At Basic Prices' in cols:
+            shares_table = tbl
+            break
+    
+    if shares_table and base_gdp_2020:
+        try:
+            # Get GDP At Basic Prices for all years (these are percentages/indices)
+            rows = query_db(f'SELECT "Year", AVG("Gdp At Basic Prices") FROM "{shares_table}" GROUP BY "Year" ORDER BY "Year"')
+            if rows:
+                # Get 2020 index value
+                row_2020 = query_db(f'SELECT AVG("Gdp At Basic Prices") FROM "{shares_table}" WHERE "Year" = 2020', one=True)
+                index_2020 = safe_float(row_2020[0]) if row_2020 and row_2020[0] else 96.26
+                
+                # Calculate GDP for each year using the index relative to 2020
+                for r in rows:
+                    year_val = int(r[0])
+                    index_val = safe_float(r[1])
+                    # Scale based on 2020 actual GDP
+                    gdp_val = base_gdp_2020 * (index_val / index_2020)
+                    years.append(str(year_val))
+                    gdp_values.append(gdp_val)
+        except Exception as e:
+            pass
+    
+    # Fallback: Use 2020 data and estimate based on growth
+    if not years and base_gdp_2020:
+        years = ['2020', '2021', '2022', '2023', '2024']
+        # Use conservative growth estimates
+        growth_rates = [0, 2.5, 3.0, 2.8, 2.5]
+        gdp_values = [base_gdp_2020]
+        for i in range(1, len(years)):
+            gdp_values.append(gdp_values[-1] * (1 + growth_rates[i]/100))
+    
+    # Final fallback
+    if not years:
+        years = ['2020', '2021', '2022', '2023', '2024']
+        base_gdp = 51.43
+        growth_rates = [0, 2.5, 3.0, 2.8, 2.5]
+        gdp_values = [base_gdp]
+        for i in range(1, len(years)):
+            gdp_values.append(gdp_values[-1] * (1 + growth_rates[i]/100))
+    
     return years, gdp_values
 
-def query_trade_timeseries():
+def query_trade_timeseries(filters=None):
     """Trade time series for trend analysis."""
+    year = filters.get('year') if filters else None
     trade_tables = find_tables_by_keywords(['trade', 'summary'], mode='any')
     periods = []
     exports = []
@@ -1001,7 +1321,13 @@ def query_trade_timeseries():
         cols = guess_column_names(tbl)
         if 'Total.Exports' in cols and 'Imports' in cols and 'Period' in cols:
             try:
-                rows = query_db(f'SELECT "Period", "Total.Exports", "Imports" FROM "{tbl}" ORDER BY "Period" DESC LIMIT 12')
+                if year:
+                    # Filter by year in Period column
+                    year_str = str(year)
+                    rows = query_db(f'SELECT "Period", "Total.Exports", "Imports" FROM "{tbl}" WHERE "Period" LIKE ? ORDER BY "Period" DESC LIMIT 12', [f'%-{year_str}'])
+                else:
+                    rows = query_db(f'SELECT "Period", "Total.Exports", "Imports" FROM "{tbl}" ORDER BY "Period" DESC LIMIT 12')
+                
                 for r in rows:
                     periods.insert(0, r['Period'])
                     exports.insert(0, safe_float(r['Total.Exports']) / 1e6)
@@ -1039,7 +1365,7 @@ def assemble_overview(filters):
         {'label': 'GDP per capita', 'value': f"${gdp['per_capita']:,.0f}"},
     ]
 
-    # Get time series data
+    # Get time series data (filters don't apply to time series, show all years)
     gdp_years, gdp_values = query_gdp_timeseries()
     if not gdp_years:
         gdp_years = ['2020', '2021', '2022', '2023', '2024']
@@ -1207,24 +1533,287 @@ def api_logout():
     session.pop('user', None)
     return jsonify({'status': 'ok'})
 
+def sanitize_table_name(name):
+    """Convert a name to a valid SQLite table name."""
+    # Remove or replace invalid characters
+    name = re.sub(r'[^a-zA-Z0-9_]', '_', name)
+    # Remove leading numbers
+    name = re.sub(r'^\d+', '', name)
+    # Ensure it starts with a letter or underscore
+    if not name or name[0].isdigit():
+        name = 'table_' + name
+    # Limit length
+    return name[:50] if len(name) <= 50 else name[:47] + '_' + str(hash(name))[-3:]
+
+def create_table_from_dataframe(df, table_name, domain):
+    """Create a SQLite table from a pandas DataFrame."""
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    
+    # Drop table if exists (or use IF NOT EXISTS)
+    cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+    
+    # Create table with appropriate column types
+    columns = []
+    for col in df.columns:
+        col_clean = sanitize_table_name(str(col))
+        # Determine SQLite type based on pandas dtype
+        if pd.api.types.is_integer_dtype(df[col]):
+            col_type = 'INTEGER'
+        elif pd.api.types.is_float_dtype(df[col]):
+            col_type = 'REAL'
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            col_type = 'TEXT'
+        else:
+            col_type = 'TEXT'
+        columns.append(f'"{col_clean}" {col_type}')
+    
+    create_sql = f'CREATE TABLE "{table_name}" ({", ".join(columns)})'
+    cursor.execute(create_sql)
+    
+    # Insert data
+    df_clean = df.copy()
+    # Clean column names for insertion
+    df_clean.columns = [sanitize_table_name(str(col)) for col in df_clean.columns]
+    # Convert datetime to strings
+    for col in df_clean.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[df.columns[list(df_clean.columns).index(col)]]):
+            df_clean[col] = df_clean[col].astype(str)
+    
+    # Replace NaN with None for SQLite
+    df_clean = df_clean.where(pd.notnull(df_clean), None)
+    
+    # Insert rows
+    placeholders = ', '.join(['?' for _ in df_clean.columns])
+    insert_sql = f'INSERT INTO "{table_name}" ({", ".join([f\'"{col}"\' for col in df_clean.columns])}) VALUES ({placeholders})'
+    
+    for _, row in df_clean.iterrows():
+        cursor.execute(insert_sql, tuple(row))
+    
+    conn.commit()
+    conn.close()
+    return len(df_clean)
+
 @app.route('/api/data/upload', methods=['POST'])
 def api_upload():
     if session.get('user', {}).get('role') not in ['Admin', 'Editor']:
         return jsonify({'error': 'Unauthorized'}), 403
+    
     file = request.files.get('file')
-    domain = request.form.get('domain')
-    if not file or not domain:
-        return jsonify({'error': 'Missing file or domain'}), 400
+    domain = request.form.get('domain', 'dashboard')
+    sheet_name = request.form.get('sheet_name', None)  # Optional: specific sheet
+    create_table = request.form.get('create_table', 'true').lower() == 'true'
+    
+    if not file:
+        return jsonify({'error': 'Missing file'}), 400
+    
     try:
-        df = pd.read_excel(file)
+        filename = file.filename
+        file_ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        
+        # Handle Excel files
+        if file_ext in ['xlsx', 'xls']:
+            # Read all sheets if no specific sheet requested
+            if sheet_name:
+                df = pd.read_excel(file, sheet_name=sheet_name)
+                sheets = {sheet_name: df}
+            else:
+                # Read all sheets
+                excel_file = pd.ExcelFile(file)
+                sheets = {sheet: pd.read_excel(excel_file, sheet_name=sheet) for sheet in excel_file.sheet_names}
+        elif file_ext == 'csv':
+            df = pd.read_csv(file)
+            sheets = {'Sheet1': df}
+        else:
+            return jsonify({'error': f'Unsupported file type: {file_ext}'}), 400
+        
+        upload_results = []
+        
+        for sheet, df in sheets.items():
+            if df.empty:
+                continue
+            
+            # Clean the DataFrame
+            df = df.dropna(how='all')  # Remove completely empty rows
+            df = df.dropna(axis=1, how='all')  # Remove completely empty columns
+            
+            if df.empty:
+                continue
+            
+            # Generate table name
+            base_name = sanitize_table_name(f"upload_{domain}_{filename.rsplit('.', 1)[0]}_{sheet}")
+            table_name = base_name
+            counter = 1
+            # Ensure unique table name
+            while True:
+                try:
+                    conn = sqlite3.connect(DATABASE)
+                    cursor = conn.cursor()
+                    cursor.execute(f'SELECT name FROM sqlite_master WHERE type="table" AND name="{table_name}"')
+                    if not cursor.fetchone():
+                        conn.close()
+                        break
+                    table_name = f"{base_name}_{counter}"
+                    counter += 1
+                    conn.close()
+                except:
+                    break
+            
+            # Store JSON for backward compatibility
+            data_json = df.to_json(orient='records', date_format='iso')
+            
+            # Create database table if requested
+            rows_inserted = 0
+            if create_table:
+                try:
+                    rows_inserted = create_table_from_dataframe(df, table_name, domain)
+                except Exception as e:
+                    return jsonify({'error': f'Failed to create table: {str(e)}'}), 400
+            
+            # Store metadata
+            upload_id = execute_db(
+                """INSERT INTO data_uploads 
+                   (domain, upload_time, filename, data_json, table_name, sheet_name, rows_count, columns_count) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (domain, datetime.now(), filename, data_json, table_name, sheet, len(df), len(df.columns))
+            )
+            
+            # Store detailed metadata
+            columns_info = json.dumps({
+                'columns': list(df.columns),
+                'dtypes': {str(k): str(v) for k, v in df.dtypes.items()},
+                'numeric_columns': list(df.select_dtypes(include=['number']).columns),
+                'categorical_columns': list(df.select_dtypes(include=['object']).columns)
+            })
+            
+            execute_db(
+                """INSERT INTO upload_metadata 
+                   (upload_id, table_name, sheet_name, domain, filename, upload_time, rows_count, columns_count, columns_info)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (upload_id, table_name, sheet, domain, filename, datetime.now(), len(df), len(df.columns), columns_info)
+            )
+            
+            upload_results.append({
+                'sheet': sheet,
+                'table_name': table_name,
+                'rows': len(df),
+                'columns': list(df.columns),
+                'rows_inserted': rows_inserted
+            })
+        
+        return jsonify({
+            'status': 'uploaded',
+            'results': upload_results,
+            'total_sheets': len(upload_results)
+        })
+        
     except Exception as e:
-        return jsonify({'error': f'Could not parse Excel: {str(e)}'}), 400
-    data_json = df.to_json(orient='records', date_format='iso')
-    execute_db(
-        "INSERT INTO data_uploads (domain, upload_time, filename, data_json) VALUES (?, ?, ?, ?)",
-        (domain, datetime.now(), file.filename, data_json)
-    )
-    return jsonify({'status': 'uploaded', 'rows': len(df), 'columns': list(df.columns)})
+        return jsonify({'error': f'Could not process file: {str(e)}'}), 400
+
+@app.route('/api/data/uploads', methods=['GET'])
+def api_list_uploads():
+    """List all uploaded files with metadata."""
+    if session.get('user', {}).get('role') not in ['Admin', 'Editor']:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    domain = request.args.get('domain', None)
+    
+    query = """
+        SELECT id, domain, filename, upload_time, table_name, sheet_name, 
+               rows_count, columns_count
+        FROM data_uploads
+    """
+    params = []
+    if domain:
+        query += " WHERE domain = ?"
+        params.append(domain)
+    query += " ORDER BY upload_time DESC"
+    
+    rows = query_db(query, tuple(params))
+    uploads = []
+    for row in rows:
+        uploads.append({
+            'id': row['id'],
+            'domain': row['domain'],
+            'filename': row['filename'],
+            'upload_time': row['upload_time'],
+            'table_name': row['table_name'],
+            'sheet_name': row['sheet_name'],
+            'rows_count': row['rows_count'],
+            'columns_count': row['columns_count']
+        })
+    
+    return jsonify({'uploads': uploads})
+
+@app.route('/api/data/upload/<int:upload_id>', methods=['DELETE'])
+def api_delete_upload(upload_id):
+    """Delete an uploaded file and its table."""
+    if session.get('user', {}).get('role') not in ['Admin', 'Editor']:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    # Get upload info
+    row = query_db("SELECT table_name FROM data_uploads WHERE id = ?", (upload_id,), one=True)
+    if not row:
+        return jsonify({'error': 'Upload not found'}), 404
+    
+    table_name = row['table_name']
+    
+    # Drop the table if it exists
+    if table_name:
+        try:
+            execute_db(f'DROP TABLE IF EXISTS "{table_name}"')
+        except:
+            pass
+    
+    # Delete metadata
+    execute_db("DELETE FROM upload_metadata WHERE upload_id = ?", (upload_id,))
+    
+    # Delete upload record
+    execute_db("DELETE FROM data_uploads WHERE id = ?", (upload_id,))
+    
+    return jsonify({'status': 'deleted'})
+
+@app.route('/api/data/upload/preview', methods=['POST'])
+def api_preview_upload():
+    """Preview Excel file before uploading."""
+    if session.get('user', {}).get('role') not in ['Admin', 'Editor']:
+        return jsonify({'error': 'Unauthorized'}), 403
+    
+    file = request.files.get('file')
+    if not file:
+        return jsonify({'error': 'Missing file'}), 400
+    
+    try:
+        filename = file.filename
+        file_ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        
+        if file_ext in ['xlsx', 'xls']:
+            excel_file = pd.ExcelFile(file)
+            sheets_info = {}
+            for sheet in excel_file.sheet_names:
+                df = pd.read_excel(excel_file, sheet_name=sheet, nrows=5)  # Preview first 5 rows
+                sheets_info[sheet] = {
+                    'columns': list(df.columns),
+                    'preview': df.head(5).to_dict('records'),
+                    'total_rows': len(pd.read_excel(excel_file, sheet_name=sheet))  # Get full count
+                }
+            return jsonify({'sheets': sheets_info, 'filename': filename})
+        elif file_ext == 'csv':
+            df = pd.read_csv(file, nrows=5)
+            return jsonify({
+                'sheets': {
+                    'Sheet1': {
+                        'columns': list(df.columns),
+                        'preview': df.head(5).to_dict('records'),
+                        'total_rows': len(pd.read_csv(file))  # Get full count
+                    }
+                },
+                'filename': filename
+            })
+        else:
+            return jsonify({'error': f'Unsupported file type: {file_ext}'}), 400
+    except Exception as e:
+        return jsonify({'error': f'Could not preview file: {str(e)}'}), 400
 
 @app.route('/api/export')
 def api_export():
