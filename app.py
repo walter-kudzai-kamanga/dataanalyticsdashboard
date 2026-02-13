@@ -1585,7 +1585,8 @@ def create_table_from_dataframe(df, table_name, domain):
     
     # Insert rows
     placeholders = ', '.join(['?' for _ in df_clean.columns])
-    insert_sql = f'INSERT INTO "{table_name}" ({", ".join([f\'"{col}"\' for col in df_clean.columns])}) VALUES ({placeholders})'
+    col_names_quoted = ', '.join([f'"{col}"' for col in df_clean.columns])
+    insert_sql = f'INSERT INTO "{table_name}" ({col_names_quoted}) VALUES ({placeholders})'
     
     for _, row in df_clean.iterrows():
         cursor.execute(insert_sql, tuple(row))
