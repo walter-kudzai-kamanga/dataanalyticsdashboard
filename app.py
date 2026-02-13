@@ -50,20 +50,42 @@ def execute_db(query, args=()):
 # ----------------------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DATABASE)
-    conn.execute("""
+    cursor = conn.cursor()
+    
+    # Create data_uploads table with all columns
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS data_uploads (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             domain TEXT NOT NULL,
             upload_time TIMESTAMP NOT NULL,
             filename TEXT,
-            data_json TEXT NOT NULL,
-            table_name TEXT,
-            sheet_name TEXT,
-            rows_count INTEGER,
-            columns_count INTEGER
+            data_json TEXT NOT NULL
         )
     """)
-    conn.execute("""
+    
+    # Add new columns if they don't exist (migration)
+    try:
+        cursor.execute("ALTER TABLE data_uploads ADD COLUMN table_name TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    
+    try:
+        cursor.execute("ALTER TABLE data_uploads ADD COLUMN sheet_name TEXT")
+    except sqlite3.OperationalError:
+        pass
+    
+    try:
+        cursor.execute("ALTER TABLE data_uploads ADD COLUMN rows_count INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    
+    try:
+        cursor.execute("ALTER TABLE data_uploads ADD COLUMN columns_count INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    
+    # Create upload_metadata table
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS upload_metadata (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             upload_id INTEGER,
@@ -78,6 +100,7 @@ def init_db():
             FOREIGN KEY (upload_id) REFERENCES data_uploads(id)
         )
     """)
+    
     conn.commit()
     conn.close()
 
@@ -1719,9 +1742,13 @@ def api_list_uploads():
     
     domain = request.args.get('domain', None)
     
+    # Use COALESCE to handle missing columns gracefully (for backward compatibility)
     query = """
-        SELECT id, domain, filename, upload_time, table_name, sheet_name, 
-               rows_count, columns_count
+        SELECT id, domain, filename, upload_time, 
+               COALESCE(table_name, '') as table_name, 
+               COALESCE(sheet_name, '') as sheet_name, 
+               COALESCE(rows_count, 0) as rows_count, 
+               COALESCE(columns_count, 0) as columns_count
         FROM data_uploads
     """
     params = []
@@ -1730,21 +1757,46 @@ def api_list_uploads():
         params.append(domain)
     query += " ORDER BY upload_time DESC"
     
-    rows = query_db(query, tuple(params))
-    uploads = []
-    for row in rows:
-        uploads.append({
-            'id': row['id'],
-            'domain': row['domain'],
-            'filename': row['filename'],
-            'upload_time': row['upload_time'],
-            'table_name': row['table_name'],
-            'sheet_name': row['sheet_name'],
-            'rows_count': row['rows_count'],
-            'columns_count': row['columns_count']
-        })
-    
-    return jsonify({'uploads': uploads})
+    try:
+        rows = query_db(query, tuple(params))
+        uploads = []
+        for row in rows:
+            uploads.append({
+                'id': row['id'],
+                'domain': row['domain'],
+                'filename': row['filename'],
+                'upload_time': row['upload_time'],
+                'table_name': row.get('table_name', ''),
+                'sheet_name': row.get('sheet_name', ''),
+                'rows_count': row.get('rows_count', 0),
+                'columns_count': row.get('columns_count', 0)
+            })
+        
+        return jsonify({'uploads': uploads})
+    except sqlite3.OperationalError:
+        # Fallback if columns don't exist - return basic info
+        query = "SELECT id, domain, filename, upload_time FROM data_uploads"
+        params = []
+        if domain:
+            query += " WHERE domain = ?"
+            params.append(domain)
+        query += " ORDER BY upload_time DESC"
+        
+        rows = query_db(query, tuple(params))
+        uploads = []
+        for row in rows:
+            uploads.append({
+                'id': row['id'],
+                'domain': row['domain'],
+                'filename': row['filename'],
+                'upload_time': row['upload_time'],
+                'table_name': '',
+                'sheet_name': '',
+                'rows_count': 0,
+                'columns_count': 0
+            })
+        
+        return jsonify({'uploads': uploads})
 
 @app.route('/api/data/upload/<int:upload_id>', methods=['DELETE'])
 def api_delete_upload(upload_id):
