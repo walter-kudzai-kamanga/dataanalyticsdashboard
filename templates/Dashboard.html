@@ -80,16 +80,25 @@ body{background:var(--bg);font-size:15px;color:var(--ink)}
 <div class="col-md-3"><select id="ageFilter" class="form-select"></select></div>
 </div></div>
 
-<div class="row g-3 mb-3">
+<div class="row g-3 mb-3" id="kpiRow">
 <div class="col-md-3"><div class="card p-3"><div id="kpiLabel1" class="sub"></div><div id="kpi1" class="kpi"></div></div></div>
 <div class="col-md-3"><div class="card p-3"><div id="kpiLabel2" class="sub"></div><div id="kpi2" class="kpi"></div></div></div>
 <div class="col-md-3"><div class="card p-3"><div id="kpiLabel3" class="sub"></div><div id="kpi3" class="kpi"></div></div></div>
 <div class="col-md-3"><div class="card p-3"><div id="kpiLabel4" class="sub"></div><div id="kpi4" class="kpi"></div></div></div>
+<div class="col-md-3"><div class="card p-3"><div id="kpiLabel5" class="sub"></div><div id="kpi5" class="kpi"></div></div></div>
+<div class="col-md-3"><div class="card p-3"><div id="kpiLabel6" class="sub"></div><div id="kpi6" class="kpi"></div></div></div>
+<div class="col-md-3"><div class="card p-3"><div id="kpiLabel7" class="sub"></div><div id="kpi7" class="kpi"></div></div></div>
+<div class="col-md-3"><div class="card p-3"><div id="kpiLabel8" class="sub"></div><div id="kpi8" class="kpi"></div></div></div>
 </div>
 
 <div class="row g-3 mb-3">
 <div class="col-md-8"><div class="card p-3"><div class="fw-semibold mb-2" id="mainChartTitle"></div><canvas id="trendChart"></canvas></div></div>
 <div class="col-md-4"><div class="card p-3"><div class="fw-semibold mb-2" id="sideChartTitle"></div><canvas id="donutChart"></canvas></div></div>
+</div>
+
+<div class="row g-3 mb-3" id="comparisonRow" style="display:none">
+<div class="col-md-6"><div class="card p-3"><div class="fw-semibold mb-2" id="comparisonChartTitle"></div><canvas id="comparisonChart"></canvas></div></div>
+<div class="col-md-6"><div class="card p-3"><div class="fw-semibold mb-2" id="sectorChartTitle"></div><canvas id="sectorChart"></canvas></div></div>
 </div>
 
 <div class="row g-3 mb-3 trade-only" id="tradeExtraRow">
@@ -169,7 +178,7 @@ applyAccessUI();
 
 // ---------------- DASHBOARD DATA (ALL COMPUTATION IS DONE IN PYTHON BACKEND) ----------------
 let currentDomain='dashboard';
-let trendChart,donutChart,importChart;
+let trendChart,donutChart,importChart,comparisonChart,sectorChart;
 
 async function loadFilters(){
   const r=await fetch('/api/filters');
@@ -218,9 +227,19 @@ async function refreshDashboard(){
 }
 
 function renderKPIs(kpis){
+  // Hide all KPIs first
+  for(let i=1;i<=8;i++){
+    const card=document.getElementById('kpiLabel'+(i)).parentElement.parentElement;
+    card.style.display='none';
+  }
+  // Show and populate available KPIs
   kpis.forEach((k,i)=>{
-    document.getElementById('kpiLabel'+(i+1)).textContent=k.label;
-    document.getElementById('kpi'+(i+1)).textContent=k.value;
+    if(i<8){
+      const card=document.getElementById('kpiLabel'+(i+1)).parentElement.parentElement;
+      card.style.display='block';
+      document.getElementById('kpiLabel'+(i+1)).textContent=k.label;
+      document.getElementById('kpi'+(i+1)).textContent=k.value;
+    }
   });
 }
 
@@ -229,17 +248,45 @@ function renderCharts(ch){
   sideChartTitle.textContent=ch.side.title;
 
   tradeExtraRow.style.display=ch.imports ? 'block':'none';
+  comparisonRow.style.display=(ch.comparison || ch.sector) ? 'block':'none';
 
   if(trendChart)trendChart.destroy();
   if(donutChart)donutChart.destroy();
   if(importChart){importChart.destroy();importChart=null;}
+  if(comparisonChart){comparisonChart.destroy();comparisonChart=null;}
+  if(sectorChart){sectorChart.destroy();sectorChart=null;}
 
-  trendChart=new Chart(trendChartEl,{type:ch.main.type,data:{labels:ch.main.labels,datasets:[{data:ch.main.data,backgroundColor:'#14b8a6'}]},options:{plugins:{legend:{display:false}}}});
+  trendChart=new Chart(trendChartEl,{
+    type:ch.main.type,
+    data:{labels:ch.main.labels,datasets:[{data:ch.main.data,backgroundColor:'#14b8a6',borderColor:'#0b2f2e',borderWidth:2}]},
+    options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
+  });
 
-  donutChart=new Chart(donutChartEl,{type:ch.side.type,data:{labels:ch.side.labels,datasets:[{data:ch.side.data,backgroundColor:['#14b8a6','#0b2f2e','#0891b2','#0ea5a4','#334155']}]} });
+  donutChart=new Chart(donutChartEl,{
+    type:ch.side.type,
+    data:{labels:ch.side.labels,datasets:[{data:ch.side.data,backgroundColor:['#14b8a6','#0b2f2e','#0891b2','#0ea5a4','#334155','#64748b','#94a3b8']}]}
+  });
 
   if(ch.imports){
-    importChart=new Chart(importChartEl,{type:'bar',data:{labels:ch.imports.labels,datasets:[{data:ch.imports.data,backgroundColor:'#0b2f2e'}]},options:{plugins:{legend:{display:false}}}});
+    importChart=new Chart(importChartEl,{type:'bar',data:{labels:ch.imports.labels,datasets:[{data:ch.imports.data,backgroundColor:'#0b2f2e'}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}});
+  }
+
+  if(ch.comparison){
+    comparisonChartTitle.textContent=ch.comparison.title;
+    comparisonChart=new Chart(comparisonChartEl,{
+      type:ch.comparison.type,
+      data:{labels:ch.comparison.labels,datasets:ch.comparison.datasets},
+      options:{plugins:{legend:{display:true}},scales:{y:{beginAtZero:true}}}
+    });
+  }
+
+  if(ch.sector){
+    sectorChartTitle.textContent=ch.sector.title;
+    sectorChart=new Chart(sectorChartEl,{
+      type:ch.sector.type,
+      data:{labels:ch.sector.labels,datasets:[{data:ch.sector.data,backgroundColor:['#14b8a6','#0b2f2e','#0891b2','#0ea5a4','#334155']}]},
+      options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
+    });
   }
 }
 
@@ -296,6 +343,10 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18}).a
 const trendChartEl=document.getElementById('trendChart');
 const donutChartEl=document.getElementById('donutChart');
 const importChartEl=document.getElementById('importChart');
+const comparisonChartEl=document.getElementById('comparisonChart');
+const sectorChartEl=document.getElementById('sectorChart');
+const comparisonChartTitle=document.getElementById('comparisonChartTitle');
+const sectorChartTitle=document.getElementById('sectorChartTitle');
 
 [...document.querySelectorAll('.sidebar a')].forEach(a=>a.onclick=()=>{
  document.querySelectorAll('.sidebar a').forEach(x=>x.classList.remove('active'));
