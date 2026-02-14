@@ -1569,54 +1569,121 @@ def sanitize_table_name(name):
     return name[:50] if len(name) <= 50 else name[:47] + '_' + str(hash(name))[-3:]
 
 def create_table_from_dataframe(df, table_name, domain):
-    """Create a SQLite table from a pandas DataFrame."""
+    """Create a SQLite table from a pandas DataFrame or append to existing table."""
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
     
-    # Drop table if exists (or use IF NOT EXISTS)
-    cursor.execute(f'DROP TABLE IF EXISTS "{table_name}"')
+    # Store original column names and their dtypes
+    original_columns = list(df.columns)
+    original_dtypes = {col: df[col].dtype for col in original_columns}
     
-    # Create table with appropriate column types
-    columns = []
-    for col in df.columns:
-        col_clean = sanitize_table_name(str(col))
-        # Determine SQLite type based on pandas dtype
-        if pd.api.types.is_integer_dtype(df[col]):
-            col_type = 'INTEGER'
-        elif pd.api.types.is_float_dtype(df[col]):
-            col_type = 'REAL'
-        elif pd.api.types.is_datetime64_any_dtype(df[col]):
-            col_type = 'TEXT'
-        else:
-            col_type = 'TEXT'
-        columns.append(f'"{col_clean}" {col_type}')
-    
-    create_sql = f'CREATE TABLE "{table_name}" ({", ".join(columns)})'
-    cursor.execute(create_sql)
-    
-    # Insert data
-    df_clean = df.copy()
     # Clean column names for insertion
-    df_clean.columns = [sanitize_table_name(str(col)) for col in df_clean.columns]
+    df_clean = df.copy()
+    clean_column_mapping = {orig: sanitize_table_name(str(orig)) for orig in original_columns}
+    df_clean.columns = [clean_column_mapping[orig] for orig in original_columns]
+    
     # Convert datetime to strings
-    for col in df_clean.columns:
-        if pd.api.types.is_datetime64_any_dtype(df[df.columns[list(df_clean.columns).index(col)]]):
-            df_clean[col] = df_clean[col].astype(str)
+    for orig_col, clean_col in clean_column_mapping.items():
+        if pd.api.types.is_datetime64_any_dtype(original_dtypes[orig_col]):
+            df_clean[clean_col] = df_clean[clean_col].astype(str)
     
     # Replace NaN with None for SQLite
     df_clean = df_clean.where(pd.notnull(df_clean), None)
     
-    # Insert rows
-    placeholders = ', '.join(['?' for _ in df_clean.columns])
-    col_names_quoted = ', '.join([f'"{col}"' for col in df_clean.columns])
-    insert_sql = f'INSERT INTO "{table_name}" ({col_names_quoted}) VALUES ({placeholders})'
+    # Check if table exists
+    cursor.execute(f'SELECT name FROM sqlite_master WHERE type="table" AND name="{table_name}"')
+    table_exists = cursor.fetchone() is not None
     
-    for _, row in df_clean.iterrows():
-        cursor.execute(insert_sql, tuple(row))
+    if table_exists:
+        # Table exists - check if columns match
+        cursor.execute(f'PRAGMA table_info("{table_name}")')
+        existing_columns = [row[1] for row in cursor.fetchall()]  # row[1] is column name
+        
+        # Check if all new columns exist in the table
+        new_columns = list(df_clean.columns)
+        missing_columns = [col for col in new_columns if col not in existing_columns]
+        
+        if missing_columns:
+            # Add missing columns to the existing table
+            for col in missing_columns:
+                # Find original column name
+                orig_col = None
+                for orig, clean in clean_column_mapping.items():
+                    if clean == col:
+                        orig_col = orig
+                        break
+                
+                if orig_col:
+                    # Determine SQLite type based on pandas dtype
+                    if pd.api.types.is_integer_dtype(original_dtypes[orig_col]):
+                        col_type = 'INTEGER'
+                    elif pd.api.types.is_float_dtype(original_dtypes[orig_col]):
+                        col_type = 'REAL'
+                    elif pd.api.types.is_datetime64_any_dtype(original_dtypes[orig_col]):
+                        col_type = 'TEXT'
+                    else:
+                        col_type = 'TEXT'
+                    
+                    try:
+                        cursor.execute(f'ALTER TABLE "{table_name}" ADD COLUMN "{col}" {col_type}')
+                    except sqlite3.OperationalError:
+                        # Column might already exist (race condition or similar name)
+                        pass
+        
+        # Use only columns that exist in the table
+        available_columns = [col for col in new_columns if col in existing_columns + missing_columns]
+        df_clean = df_clean[available_columns]
+        
+        # Insert data (append to existing table)
+        placeholders = ', '.join(['?' for _ in available_columns])
+        col_names_quoted = ', '.join([f'"{col}"' for col in available_columns])
+        insert_sql = f'INSERT INTO "{table_name}" ({col_names_quoted}) VALUES ({placeholders})'
+        
+        rows_inserted = 0
+        for _, row in df_clean.iterrows():
+            try:
+                row_values = [row[col] for col in available_columns]
+                cursor.execute(insert_sql, tuple(row_values))
+                rows_inserted += 1
+            except sqlite3.IntegrityError:
+                # Skip duplicate rows if there are unique constraints
+                continue
+            except Exception as e:
+                # Skip rows with other errors (type mismatches, etc.)
+                continue
+        
+    else:
+        # Table doesn't exist - create new table
+        columns = []
+        for orig_col in original_columns:
+            clean_col = clean_column_mapping[orig_col]
+            # Determine SQLite type based on pandas dtype
+            if pd.api.types.is_integer_dtype(original_dtypes[orig_col]):
+                col_type = 'INTEGER'
+            elif pd.api.types.is_float_dtype(original_dtypes[orig_col]):
+                col_type = 'REAL'
+            elif pd.api.types.is_datetime64_any_dtype(original_dtypes[orig_col]):
+                col_type = 'TEXT'
+            else:
+                col_type = 'TEXT'
+            columns.append(f'"{clean_col}" {col_type}')
+        
+        create_sql = f'CREATE TABLE "{table_name}" ({", ".join(columns)})'
+        cursor.execute(create_sql)
+        
+        # Insert data
+        placeholders = ', '.join(['?' for _ in df_clean.columns])
+        col_names_quoted = ', '.join([f'"{col}"' for col in df_clean.columns])
+        insert_sql = f'INSERT INTO "{table_name}" ({col_names_quoted}) VALUES ({placeholders})'
+        
+        rows_inserted = 0
+        for _, row in df_clean.iterrows():
+            cursor.execute(insert_sql, tuple(row))
+            rows_inserted += 1
     
     conn.commit()
     conn.close()
-    return len(df_clean)
+    return rows_inserted
 
 @app.route('/api/data/upload', methods=['POST'])
 def api_upload():
@@ -1664,24 +1731,16 @@ def api_upload():
             if df.empty:
                 continue
             
-            # Generate table name
+            # Generate table name - use base name to allow appending to existing tables
             base_name = sanitize_table_name(f"upload_{domain}_{filename.rsplit('.', 1)[0]}_{sheet}")
             table_name = base_name
-            counter = 1
-            # Ensure unique table name
-            while True:
-                try:
-                    conn = sqlite3.connect(DATABASE)
-                    cursor = conn.cursor()
-                    cursor.execute(f'SELECT name FROM sqlite_master WHERE type="table" AND name="{table_name}"')
-                    if not cursor.fetchone():
-                        conn.close()
-                        break
-                    table_name = f"{base_name}_{counter}"
-                    counter += 1
-                    conn.close()
-                except:
-                    break
+            
+            # Check if table exists before processing (to determine if we're appending)
+            conn_check = sqlite3.connect(DATABASE)
+            cursor_check = conn_check.cursor()
+            cursor_check.execute(f'SELECT name FROM sqlite_master WHERE type="table" AND name="{table_name}"')
+            table_existed_before = cursor_check.fetchone() is not None
+            conn_check.close()
             
             # Store JSON for backward compatibility
             data_json = df.to_json(orient='records', date_format='iso')
@@ -1722,13 +1781,15 @@ def api_upload():
                 'table_name': table_name,
                 'rows': len(df),
                 'columns': list(df.columns),
-                'rows_inserted': rows_inserted
+                'rows_inserted': rows_inserted,
+                'appended': table_existed_before if create_table else False
             })
         
         return jsonify({
             'status': 'uploaded',
             'results': upload_results,
-            'total_sheets': len(upload_results)
+            'total_sheets': len(upload_results),
+            'message': 'Data has been added to the database. Existing data was preserved.'
         })
         
     except Exception as e:
