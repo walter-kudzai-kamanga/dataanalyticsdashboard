@@ -9,6 +9,9 @@ from flask import (
     send_file, g
 )
 import pandas as pd
+import logging
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
 app.secret_key = 'replace-this-with-a-secret-key-for-production'
@@ -2007,4 +2010,4 @@ def distinct_from_table(column_hints, table_pattern=None):
 
 # ----------------------------------------------------------------------
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=9000, debug=False)

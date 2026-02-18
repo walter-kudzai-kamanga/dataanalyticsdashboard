@@ -1,0 +1,100 @@
+ * Serving Flask app 'app'
+ * Debug mode: on
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8080
+ * Running on http://192.168.1.111:8080
+[33mPress CTRL+C to quit[0m
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 307-220-089
+127.0.0.1 - - [18/Feb/2026 21:41:46] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [18/Feb/2026 21:41:47] "GET /api/filters HTTP/1.1" 200 -
+127.0.0.1 - - [18/Feb/2026 21:41:47] "POST /api/dashboard HTTP/1.1" 200 -
+127.0.0.1 - - [18/Feb/2026 21:41:47] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+----------------------------------------
+Exception occurred during processing of request from ('192.168.1.111', 54065)
+----------------------------------------
+Exception occurred during processing of request from ('192.168.1.111', 54066)
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 755, in __init__
+    self.handle()
+  File "/Users/user/dataanalyticsdashboard/venv/lib/python3.11/site-packages/werkzeug/serving.py", line 398, in handle
+    super().handle()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 431, in handle
+    self.handle_one_request()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 399, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 705, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 57] Socket is not connected
+----------------------------------------
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 755, in __init__
+    self.handle()
+  File "/Users/user/dataanalyticsdashboard/venv/lib/python3.11/site-packages/werkzeug/serving.py", line 398, in handle
+    super().handle()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 431, in handle
+    self.handle_one_request()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 399, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 705, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 57] Socket is not connected
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('192.168.1.111', 54069)
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 755, in __init__
+    self.handle()
+  File "/Users/user/dataanalyticsdashboard/venv/lib/python3.11/site-packages/werkzeug/serving.py", line 398, in handle
+    super().handle()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 431, in handle
+    self.handle_one_request()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 399, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 705, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 57] Socket is not connected
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('192.168.1.111', 54070)
+Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 691, in process_request_thread
+    self.finish_request(request, client_address)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 361, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socketserver.py", line 755, in __init__
+    self.handle()
+  File "/Users/user/dataanalyticsdashboard/venv/lib/python3.11/site-packages/werkzeug/serving.py", line 398, in handle
+    super().handle()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 431, in handle
+    self.handle_one_request()
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/http/server.py", line 399, in handle_one_request
+    self.raw_requestline = self.rfile.readline(65537)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.11/lib/python3.11/socket.py", line 705, in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+OSError: [Errno 57] Socket is not connected
+----------------------------------------
+ * Detected change in '/Users/user/dataanalyticsdashboard/app.py', reloading
+ * Restarting with stat

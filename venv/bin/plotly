@@ -1,4 +1,4 @@
-#!/home/deuce/dataanalyticsdashboard/venv/bin/python3
+#!/Users/user/dataanalyticsdashboard/venv/bin/python3.11
 # -*- coding: utf-8 -*-
 import re
 import sys
