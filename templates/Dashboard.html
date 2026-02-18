@@ -1,526 +1,852 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>National Statistics Executive Dashboard</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-<link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet" />
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<style>
-:root{--nav:#0b2f2e;--accent:#14b8a6;--bg:#f4f7fa;--ink:#0f172a}
-body{background:var(--bg);font-size:15px;color:var(--ink)}
-.sidebar{background:linear-gradient(180deg,#0b2f2e,#083d3b);min-height:100vh;color:#fff}
-.sidebar a{color:#dceeee;text-decoration:none;display:block;padding:12px 16px;border-radius:12px;margin-bottom:6px;cursor:pointer;font-weight:500}
-.sidebar a.active,.sidebar a:hover{background:#0fb9a833;color:#fff}
-.topbar{background:#fff;border-radius:18px;padding:12px 18px}
-.card{border:0;border-radius:20px;box-shadow:0 10px 22px rgba(0,0,0,.06)}
-.kpi{font-size:26px;font-weight:800}
-.sub{font-size:13px;color:#6b7280}
-#map{height:280px;border-radius:18px}
-.search-input{border-radius:999px;padding-left:40px}
-.search-wrap{position:relative}
-.search-wrap span{position:absolute;left:14px;top:9px;color:#999}
-.trade-only{display:none}
-.role-badge{background:#ecfeff;color:#0f766e;border-radius:999px;padding:3px 12px;font-size:12px}
-#loginScreen{position:fixed;inset:0;background:linear-gradient(135deg,#0b2f2e,#14b8a6);display:none;align-items:center;justify-content:center;z-index:9999}
-</style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>National Statistics Executive Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    :root {
+      --nav: #0b2f2e;
+      --accent: #14b8a6;
+      --bg: #f4f7fa;
+      --ink: #0f172a
+    }
+
+    body {
+      background: var(--bg);
+      font-size: 15px;
+      color: var(--ink)
+    }
+
+    /* ---- SIDEBAR ---- */
+    .sidebar {
+      background: linear-gradient(180deg, #0b2f2e, #083d3b);
+      color: #fff;
+      transition: transform .3s ease
+    }
+
+    .sidebar a {
+      color: #dceeee;
+      text-decoration: none;
+      display: block;
+      padding: 12px 16px;
+      border-radius: 12px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      font-weight: 500
+    }
+
+    .sidebar a.active,
+    .sidebar a:hover {
+      background: rgba(15, 185, 168, 0.2);
+      color: #fff
+    }
+
+    /* Desktop: sidebar is a fixed left column */
+    @media(min-width:768px) {
+      .sidebar {
+        min-height: 100vh
+      }
+
+      #sidebarToggle {
+        display: none !important
+      }
+
+      #sidebarOverlay {
+        display: none !important
+      }
+    }
+
+    /* Mobile: sidebar slides in as an off-canvas drawer */
+    @media(max-width:767.98px) {
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: 240px;
+        z-index: 1050;
+        transform: translateX(-100%);
+        padding: 1rem;
+      }
+
+      .sidebar.open {
+        transform: translateX(0)
+      }
+
+      #sidebarOverlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, .45);
+        z-index: 1040;
+      }
+
+      #sidebarOverlay.open {
+        display: block
+      }
+
+      .main-col {
+        padding-top: 0.5rem !important
+      }
+    }
+
+    /* ---- TOPBAR ---- */
+    .topbar {
+      background: #fff;
+      border-radius: 18px;
+      padding: 12px 18px
+    }
+
+    .card {
+      border: 0;
+      border-radius: 20px;
+      box-shadow: 0 10px 22px rgba(0, 0, 0, .06)
+    }
+
+    .kpi {
+      font-size: 24px;
+      font-weight: 800;
+      line-height: 1.2;
+    }
+
+    .sub {
+      font-size: 13px;
+      color: #6b7280
+    }
+
+    #map {
+      height: 280px;
+      border-radius: 18px
+    }
+
+    .search-input {
+      border-radius: 999px;
+      padding-left: 40px
+    }
+
+    .search-wrap {
+      position: relative;
+      flex: 1;
+      min-width: 0
+    }
+
+    .search-wrap span {
+      position: absolute;
+      left: 14px;
+      top: 9px;
+      color: #999
+    }
+
+    .trade-only {
+      display: none
+    }
+
+    .role-badge {
+      background: #ecfeff;
+      color: #0f766e;
+      border-radius: 999px;
+      padding: 3px 12px;
+      font-size: 12px
+    }
+
+    /* ---- LOGIN MODAL ---- */
+    #loginScreen {
+      position: fixed;
+      inset: 0;
+      background: linear-gradient(135deg, #0b2f2e, #14b8a6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      padding: 1rem
+    }
+
+    #loginCard {
+      width: 100%;
+      max-width: 360px
+    }
+
+    /* ---- MOBILE TOPBAR TWEAKS ---- */
+    /* ---- MOBILE REFINEMENTS ---- */
+    @media(max-width:575.98px) {
+      body {
+        font-size: 14px;
+      }
+
+      .topbar {
+        border-radius: 12px;
+        padding: 8px 12px;
+        gap: 0.5rem !important;
+      }
+
+      .kpi {
+        font-size: 19px;
+      }
+
+      #domainTitle {
+        font-size: 0.95rem !important;
+        width: 100%;
+      }
+
+      .topbar-actions {
+        width: 100%;
+        justify-content: space-between;
+      }
+
+      .search-wrap {
+        flex: 1;
+        max-width: none !important;
+      }
+
+      .card {
+        border-radius: 16px;
+      }
+
+      #map {
+        height: 220px;
+      }
+    }
+
+    .kpi-card {
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .kpi-card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.1);
+    }
+  </style>
 </head>
+
 <body>
 
-<div id="loginScreen">
-  <div class="card p-4" style="width:360px">
-    <h5 class="mb-3">Staff Login</h5>
-    <div class="mb-2">
-      <label class="form-label">Username</label>
-      <input id="loginUser" class="form-control" />
-    </div>
-    <div class="mb-3">
-      <label class="form-label">Password</label>
-      <input id="loginPass" type="password" class="form-control" />
-    </div>
-    <button id="loginBtn" class="btn btn-success w-100">Login</button>
-    <button id="cancelLoginBtn" class="btn btn-link w-100 mt-2">Cancel</button>
-  </div>
-</div>
-
-<div id="app" class="container-fluid"><div class="row">
-
-<div class="col-12 col-md-2 sidebar p-3">
-<h5 class="mb-4">ZimStats</h5>
-<a class="active" data-domain="dashboard">Dashboard</a>
-<a data-domain="prices">Prices</a>
-<a data-domain="accounts">National Accounts</a>
-<a data-domain="labour">Labour</a>
-<a data-domain="trade">Trade</a>
-<hr class="border-light" />
-<div class="small">Current access</div>
-<div class="fw-semibold" id="userName">Public Viewer</div>
-<div id="userRole" class="role-badge mt-1">Viewer</div>
-</div>
-
-<div class="col-12 col-md-10 p-3">
-
-<div class="topbar mb-3 d-flex align-items-center justify-content-between">
-<div class="fw-semibold fs-5" id="domainTitle">Top‑Level National Analytics</div>
-<div class="d-flex align-items-center gap-3">
-  <div class="search-wrap" style="width:340px"><span>🔍</span>
-  <input id="globalSearch" class="form-control search-input" placeholder="Search province e.g. Mashonaland East" />
-  </div>
-  <button id="loginOpenBtn" class="btn btn-sm btn-outline-primary">Staff Login</button>
-  <button id="logoutBtn" class="btn btn-sm btn-outline-secondary" style="display:none">Return to viewer</button>
-</div>
-</div>
-
-<div class="card p-3 mb-3"><div class="row g-2">
-<div class="col-md-3"><select id="yearFilter" class="form-select"></select></div>
-<div class="col-md-3"><select id="regionFilter" class="form-select"></select></div>
-<div class="col-md-3"><select id="genderFilter" class="form-select"></select></div>
-<div class="col-md-3"><select id="ageFilter" class="form-select"></select></div>
-</div></div>
-
-<div class="row g-3 mb-3" id="kpiRow">
-<div class="col-md-3"><div class="card p-3"><div id="kpiLabel1" class="sub"></div><div id="kpi1" class="kpi"></div></div></div>
-<div class="col-md-3"><div class="card p-3"><div id="kpiLabel2" class="sub"></div><div id="kpi2" class="kpi"></div></div></div>
-<div class="col-md-3"><div class="card p-3"><div id="kpiLabel3" class="sub"></div><div id="kpi3" class="kpi"></div></div></div>
-<div class="col-md-3"><div class="card p-3"><div id="kpiLabel4" class="sub"></div><div id="kpi4" class="kpi"></div></div></div>
-<div class="col-md-3"><div class="card p-3"><div id="kpiLabel5" class="sub"></div><div id="kpi5" class="kpi"></div></div></div>
-<div class="col-md-3"><div class="card p-3"><div id="kpiLabel6" class="sub"></div><div id="kpi6" class="kpi"></div></div></div>
-<div class="col-md-3"><div class="card p-3"><div id="kpiLabel7" class="sub"></div><div id="kpi7" class="kpi"></div></div></div>
-<div class="col-md-3"><div class="card p-3"><div id="kpiLabel8" class="sub"></div><div id="kpi8" class="kpi"></div></div></div>
-</div>
-
-<div class="row g-3 mb-3">
-<div class="col-md-8"><div class="card p-3"><div class="fw-semibold mb-2" id="mainChartTitle"></div><canvas id="trendChart"></canvas></div></div>
-<div class="col-md-4"><div class="card p-3"><div class="fw-semibold mb-2" id="sideChartTitle"></div><canvas id="donutChart"></canvas></div></div>
-</div>
-
-<div class="row g-3 mb-3" id="comparisonRow" style="display:none">
-<div class="col-md-6"><div class="card p-3"><div class="fw-semibold mb-2" id="comparisonChartTitle"></div><canvas id="comparisonChart"></canvas></div></div>
-<div class="col-md-6"><div class="card p-3"><div class="fw-semibold mb-2" id="sectorChartTitle"></div><canvas id="sectorChart"></canvas></div></div>
-</div>
-
-<div class="row g-3 mb-3 trade-only" id="tradeExtraRow">
-<div class="col-md-12">
-<div class="card p-3">
-<div class="fw-semibold mb-2">Imports by Province</div>
-<canvas id="importChart"></canvas>
-</div>
-</div>
-</div>
-
-<div class="row g-3 mb-3">
-<div class="col-md-6"><div class="card p-3"><div class="fw-semibold mb-2">Geographic Overview</div><div id="map"></div></div></div>
-<div class="col-md-6"><div class="card p-3"><div class="fw-semibold mb-2">Data Highlights</div><ul id="insights" class="mb-0"></ul></div></div>
-</div>
-
-<div id="dataAdmin" class="card p-3 mb-3" style="display:none">
-<div class="fw-semibold mb-2">Data Management</div>
-
-<div class="mb-3">
-  <label class="form-label">Upload Excel/CSV File</label>
-  <div class="input-group">
-    <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" class="form-control" />
-    <select id="uploadDomain" class="form-select" style="max-width:150px">
-      <option value="dashboard">Dashboard</option>
-      <option value="labour">Labour</option>
-      <option value="accounts">Accounts</option>
-      <option value="prices">Prices</option>
-      <option value="trade">Trade</option>
-    </select>
-    <button id="previewBtn" class="btn btn-outline-primary">Preview</button>
-    <button id="uploadBtn" class="btn btn-success">Upload</button>
-  </div>
-  <div class="small text-muted mt-1">Supports Excel (.xlsx, .xls) with multiple sheets and CSV files</div>
-</div>
-
-<div id="previewArea" class="mb-3" style="display:none">
-  <div class="card p-3 bg-light">
-    <div class="fw-semibold mb-2">File Preview</div>
-    <div id="previewContent"></div>
-    <div class="mt-2">
-      <label class="form-label small">Select Sheet (for Excel files):</label>
-      <select id="sheetSelect" class="form-select form-select-sm"></select>
+  <!-- Login overlay -->
+  <div id="loginScreen">
+    <div id="loginCard" class="card p-4">
+      <h5 class="mb-3">Staff Login</h5>
+      <div class="mb-2">
+        <label class="form-label">Username</label>
+        <input id="loginUser" class="form-control" />
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Password</label>
+        <input id="loginPass" type="password" class="form-control" />
+      </div>
+      <button id="loginBtn" class="btn btn-success w-100">Login</button>
+      <button id="cancelLoginBtn" class="btn btn-link w-100 mt-2">Cancel</button>
     </div>
   </div>
-</div>
 
-<div id="uploadStatus" class="alert" style="display:none"></div>
+  <!-- Mobile sidebar overlay -->
+  <div id="sidebarOverlay"></div>
 
-<div class="mb-3">
-  <div class="d-flex justify-content-between align-items-center mb-2">
-    <div class="fw-semibold">Uploaded Files</div>
-    <button id="refreshUploadsBtn" class="btn btn-sm btn-outline-secondary">Refresh</button>
-  </div>
-  <div id="uploadsList" class="table-responsive" style="max-height:300px;overflow-y:auto">
-    <table class="table table-sm table-hover">
-      <thead class="table-light sticky-top">
-        <tr>
-          <th>Filename</th>
-          <th>Domain</th>
-          <th>Sheet</th>
-          <th>Rows</th>
-          <th>Columns</th>
-          <th>Uploaded</th>
-          <th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="uploadsTableBody">
-        <tr><td colspan="7" class="text-center text-muted">No uploads yet</td></tr>
-      </tbody>
-    </table>
-  </div>
-</div>
+  <div id="app" class="container-fluid">
+    <div class="row flex-nowrap">
 
-<div class="row g-2">
-  <div class="col-md-6">
-    <button id="addRowBtn" class="btn btn-sm btn-outline-success w-100">Create Record</button>
-  </div>
-  <div class="col-md-6">
-    <button id="deleteFilteredBtn" class="btn btn-sm btn-outline-danger w-100">Delete Filtered</button>
-  </div>
-</div>
-<div class="small text-muted mt-2">All operations are executed by the backend API.</div>
-</div>
+      <!-- SIDEBAR -->
+      <div class="col-auto sidebar p-3" id="sidebar">
+        <h5 class="mb-4">ZimStats</h5>
+        <a class="active" data-domain="dashboard">Dashboard</a>
+        <a data-domain="prices">Prices</a>
+        <a data-domain="accounts">National Accounts</a>
+        <a data-domain="labour">Labour</a>
+        <a data-domain="trade">Trade</a>
+        <hr class="border-light" />
+        <div class="small">Current access</div>
+        <div class="fw-semibold" id="userName">Public Viewer</div>
+        <div id="userRole" class="role-badge mt-1">Viewer</div>
+      </div>
 
-<div class="card p-3">
-<div class="d-flex justify-content-between mb-2"><div class="fw-semibold">Detailed Indicators</div>
-<button id="exportBtn" class="btn btn-sm btn-outline-secondary">Export CSV</button></div>
-<div class="table-responsive"><table class="table table-sm" id="dataTable"></table></div>
-</div>
+      <!-- MAIN CONTENT -->
+      <div class="col p-3 main-col" style="min-width:0">
 
-</div></div></div>
+        <!-- TOPBAR -->
+        <div class="topbar mb-3 d-flex align-items-center gap-2 flex-wrap">
+          <!-- Hamburger (mobile only) -->
+          <button id="sidebarToggle" class="btn btn-link link-dark d-md-none me-1 p-1" aria-label="Menu">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <line x1="3" y1="12" x2="21" y2="12"></line>
+              <line x1="3" y1="6" x2="21" y2="6"></line>
+              <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+          </button>
 
-<script>
-// ---------------- ACCESS UI (frontend only, backend must enforce real auth) ----------------
-let currentUser={name:'Public user',role:'Viewer'};
+          <div class="fw-semibold fs-5 me-auto" id="domainTitle">Top‑Level National Analytics</div>
 
-function applyAccessUI(){
-  userName.textContent=currentUser.role==='Viewer'?'Public Viewer':currentUser.name;
-  userRole.textContent=currentUser.role;
-  if(currentUser.role==='Admin'||currentUser.role==='Editor'){
-    dataAdmin.style.display='block';
-    logoutBtn.style.display='inline-block';
-    loginOpenBtn.style.display='none';
-    loadUploadsList();
-  }else{
-    dataAdmin.style.display='none';
-    logoutBtn.style.display='none';
-    loginOpenBtn.style.display='inline-block';
-  }
-}
+          <div class="d-flex align-items-center gap-2 topbar-actions flex-wrap">
+            <div class="search-wrap" style="min-width:160px;max-width:300px">
+              <span>🔍</span>
+              <input id="globalSearch" class="form-control search-input" placeholder="Search province…" />
+            </div>
+            <button id="loginOpenBtn" class="btn btn-sm btn-outline-primary">Staff Login</button>
+            <button id="logoutBtn" class="btn btn-sm btn-outline-secondary" style="display:none">Return to
+              viewer</button>
+          </div>
+        </div>
 
-loginOpenBtn.onclick=()=>loginScreen.style.display='flex';
-cancelLoginBtn.onclick=()=>loginScreen.style.display='none';
+        <!-- FILTERS -->
+        <div class="card p-3 mb-3">
+          <div class="row g-2">
+            <div class="col-6 col-md-3"><select id="yearFilter" class="form-select form-select-sm"></select></div>
+            <div class="col-6 col-md-3"><select id="regionFilter" class="form-select form-select-sm"></select></div>
+            <div class="col-6 col-md-3"><select id="genderFilter" class="form-select form-select-sm"></select></div>
+            <div class="col-6 col-md-3"><select id="ageFilter" class="form-select form-select-sm"></select></div>
+          </div>
+        </div>
 
-loginBtn.onclick=async()=>{
-  const res=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:loginUser.value,password:loginPass.value})});
-  if(!res.ok){alert('Invalid credentials');return;}
-  const u=await res.json();
-  currentUser=u;
-  loginScreen.style.display='none';
-  applyAccessUI();
-};
+        <!-- KPI CARDS -->
+        <div class="row g-2 g-md-3 mb-3" id="kpiRow">
+          <div class="col-6 col-md-3">
+            <div class="card p-3 kpi-card">
+              <div id="kpiLabel1" class="sub"></div>
+              <div id="kpi1" class="kpi"></div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card p-3 kpi-card">
+              <div id="kpiLabel2" class="sub"></div>
+              <div id="kpi2" class="kpi"></div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card p-3 kpi-card">
+              <div id="kpiLabel3" class="sub"></div>
+              <div id="kpi3" class="kpi"></div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card p-3 kpi-card">
+              <div id="kpiLabel4" class="sub"></div>
+              <div id="kpi4" class="kpi"></div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card p-3 kpi-card">
+              <div id="kpiLabel5" class="sub"></div>
+              <div id="kpi5" class="kpi"></div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card p-3 kpi-card">
+              <div id="kpiLabel6" class="sub"></div>
+              <div id="kpi6" class="kpi"></div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card p-3 kpi-card">
+              <div id="kpiLabel7" class="sub"></div>
+              <div id="kpi7" class="kpi"></div>
+            </div>
+          </div>
+          <div class="col-6 col-md-3">
+            <div class="card p-3 kpi-card">
+              <div id="kpiLabel8" class="sub"></div>
+              <div id="kpi8" class="kpi"></div>
+            </div>
+          </div>
+        </div>
 
-logoutBtn.onclick=async()=>{
-  await fetch('/api/logout');
-  currentUser={name:'Public user',role:'Viewer'};
-  applyAccessUI();
-};
+        <!-- MAIN CHARTS -->
+        <div class="row g-3 mb-3">
+          <div class="col-12 col-md-8">
+            <div class="card p-3">
+              <div class="fw-semibold mb-2" id="mainChartTitle"></div><canvas id="trendChart"></canvas>
+            </div>
+          </div>
+          <div class="col-12 col-md-4">
+            <div class="card p-3">
+              <div class="fw-semibold mb-2" id="sideChartTitle"></div><canvas id="donutChart"></canvas>
+            </div>
+          </div>
+        </div>
 
-applyAccessUI();
+        <!-- COMPARISON CHARTS (hidden until data available) -->
+        <div class="row g-3 mb-3" id="comparisonRow" style="display:none">
+          <div class="col-12 col-md-6">
+            <div class="card p-3">
+              <div class="fw-semibold mb-2" id="comparisonChartTitle"></div><canvas id="comparisonChart"></canvas>
+            </div>
+          </div>
+          <div class="col-12 col-md-6">
+            <div class="card p-3">
+              <div class="fw-semibold mb-2" id="sectorChartTitle"></div><canvas id="sectorChart"></canvas>
+            </div>
+          </div>
+        </div>
 
-// ---------------- DASHBOARD DATA (ALL COMPUTATION IS DONE IN PYTHON BACKEND) ----------------
-let currentDomain='dashboard';
-let trendChart,donutChart,importChart,comparisonChart,sectorChart;
+        <!-- TRADE EXTRA (hidden unless trade domain) -->
+        <div class="row g-3 mb-3 trade-only" id="tradeExtraRow">
+          <div class="col-12">
+            <div class="card p-3">
+              <div class="fw-semibold mb-2">Imports by Province</div>
+              <canvas id="importChart"></canvas>
+            </div>
+          </div>
+        </div>
 
-async function loadFilters(){
-  const r=await fetch('/api/filters');
-  const f=await r.json();
+        <!-- MAP + INSIGHTS -->
+        <div class="row g-3 mb-3">
+          <div class="col-12 col-md-6">
+            <div class="card p-3">
+              <div class="fw-semibold mb-2">Geographic Overview</div>
+              <div id="map"></div>
+            </div>
+          </div>
+          <div class="col-12 col-md-6">
+            <div class="card p-3">
+              <div class="fw-semibold mb-2">Data Highlights</div>
+              <ul id="insights" class="mb-0"></ul>
+            </div>
+          </div>
+        </div>
 
-  yearFilter.innerHTML='';
-  f.years.forEach(y=>yearFilter.add(new Option(y,y)));
+        <!-- DATA ADMIN (admin/editor only) -->
+        <div id="dataAdmin" class="card p-3 mb-3" style="display:none">
+          <div class="fw-semibold mb-2">Data Management</div>
 
-  regionFilter.innerHTML='';
-  regionFilter.add(new Option('National','All'));
-  f.regions.forEach(p=>regionFilter.add(new Option(p,p)));
+          <div class="mb-3">
+            <label class="form-label">Upload Excel/CSV File</label>
+            <div class="row g-2 w-100 mt-1">
+              <div class="col-12 col-sm-6 col-md-3">
+                <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" class="form-control form-control-sm" />
+              </div>
+              <div class="col-6 col-sm-3 col-md-2">
+                <select id="uploadDomain" class="form-select form-select-sm">
+                  <option value="dashboard">Dashboard</option>
+                  <option value="labour">Labour</option>
+                  <option value="accounts">Accounts</option>
+                  <option value="prices">Prices</option>
+                  <option value="trade">Trade</option>
+                </select>
+              </div>
+              <div class="col-3 col-sm-1.5 col-md-1">
+                <button id="previewBtn" class="btn btn-sm btn-outline-primary w-100">Preview</button>
+              </div>
+              <div class="col-3 col-sm-1.5 col-md-1">
+                <button id="uploadBtn" class="btn btn-sm btn-success w-100">Upload</button>
+              </div>
+            </div>
+            <div class="small text-muted mt-1">Supports Excel (.xlsx, .xls) with multiple sheets and CSV files</div>
+          </div>
 
-  genderFilter.innerHTML='';
-  f.genders.forEach(g=>genderFilter.add(new Option(g,g)));
+          <div id="previewArea" class="mb-3" style="display:none">
+            <div class="card p-3 bg-light">
+              <div class="fw-semibold mb-2">File Preview</div>
+              <div id="previewContent"></div>
+              <div class="mt-2">
+                <label class="form-label small">Select Sheet (for Excel files):</label>
+                <select id="sheetSelect" class="form-select form-select-sm"></select>
+              </div>
+            </div>
+          </div>
 
-  ageFilter.innerHTML='';
-  f.ages.forEach(a=>ageFilter.add(new Option(a,a)));
-}
+          <div id="uploadStatus" class="alert" style="display:none"></div>
 
-function getFilterState(){
-  return {
-    domain:currentDomain,
-    year:yearFilter.value,
-    region:regionFilter.value,
-    gender:genderFilter.value,
-    age:ageFilter.value,
-    search:globalSearch.value
-  };
-}
+          <div class="mb-3">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <div class="fw-semibold">Uploaded Files</div>
+              <button id="refreshUploadsBtn" class="btn btn-sm btn-outline-secondary">Refresh</button>
+            </div>
+            <div id="uploadsList" class="table-responsive" style="max-height:300px;overflow-y:auto">
+              <table class="table table-sm table-hover">
+                <thead class="table-light sticky-top">
+                  <tr>
+                    <th>Filename</th>
+                    <th>Domain</th>
+                    <th>Sheet</th>
+                    <th>Rows</th>
+                    <th>Cols</th>
+                    <th>Uploaded</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="uploadsTableBody">
+                  <tr>
+                    <td colspan="7" class="text-center text-muted">No uploads yet</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
 
-async function refreshDashboard(){
-  const res=await fetch('/api/dashboard',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(getFilterState())
-  });
+          <div class="row g-2">
+            <div class="col-6">
+              <button id="addRowBtn" class="btn btn-sm btn-outline-success w-100">Create Record</button>
+            </div>
+            <div class="col-6">
+              <button id="deleteFilteredBtn" class="btn btn-sm btn-outline-danger w-100">Delete Filtered</button>
+            </div>
+          </div>
+          <div class="small text-muted mt-2">All operations are executed by the backend API.</div>
+        </div>
 
-  const payload=await res.json();
+        <!-- DATA TABLE -->
+        <div class="card p-3">
+          <div class="d-flex justify-content-between mb-2">
+            <div class="fw-semibold">Detailed Indicators</div>
+            <button id="exportBtn" class="btn btn-sm btn-outline-secondary">Export CSV</button>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm" id="dataTable"></table>
+          </div>
+        </div>
 
-  renderKPIs(payload.kpis);
-  renderCharts(payload.charts);
-  renderTable(payload.table);
-  renderInsights(payload.insights);
+      </div><!-- /main col -->
+    </div><!-- /row -->
+  </div><!-- /app -->
 
-  domainTitle.textContent=payload.title;
-}
+  <script>
+    // ---------------- SIDEBAR TOGGLE (mobile) ----------------
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('sidebarOverlay');
+    document.getElementById('sidebarToggle').onclick = () => {
+      sidebar.classList.toggle('open');
+      overlay.classList.toggle('open');
+    };
+    overlay.onclick = () => {
+      sidebar.classList.remove('open');
+      overlay.classList.remove('open');
+    };
+    // Close sidebar when a nav link is clicked on mobile
+    document.querySelectorAll('.sidebar a').forEach(a => a.addEventListener('click', () => {
+      if (window.innerWidth < 768) {
+        sidebar.classList.remove('open');
+        overlay.classList.remove('open');
+      }
+    }));
 
-function renderKPIs(kpis){
-  // Hide all KPIs first
-  for(let i=1;i<=8;i++){
-    const card=document.getElementById('kpiLabel'+(i)).parentElement.parentElement;
-    card.style.display='none';
-  }
-  // Show and populate available KPIs
-  kpis.forEach((k,i)=>{
-    if(i<8){
-      const card=document.getElementById('kpiLabel'+(i+1)).parentElement.parentElement;
-      card.style.display='block';
-      document.getElementById('kpiLabel'+(i+1)).textContent=k.label;
-      document.getElementById('kpi'+(i+1)).textContent=k.value;
+    // ---------------- ACCESS UI (frontend only, backend must enforce real auth) ----------------
+    let currentUser = { name: 'Public user', role: 'Viewer' };
+
+    function applyAccessUI() {
+      userName.textContent = currentUser.role === 'Viewer' ? 'Public Viewer' : currentUser.name;
+      userRole.textContent = currentUser.role;
+      if (currentUser.role === 'Admin' || currentUser.role === 'Editor') {
+        dataAdmin.style.display = 'block';
+        logoutBtn.style.display = 'inline-block';
+        loginOpenBtn.style.display = 'none';
+        loadUploadsList();
+      } else {
+        dataAdmin.style.display = 'none';
+        logoutBtn.style.display = 'none';
+        loginOpenBtn.style.display = 'inline-block';
+      }
     }
-  });
-}
 
-function renderCharts(ch){
-  mainChartTitle.textContent=ch.main.title;
-  sideChartTitle.textContent=ch.side.title;
+    loginOpenBtn.onclick = () => loginScreen.style.display = 'flex';
+    cancelLoginBtn.onclick = () => loginScreen.style.display = 'none';
 
-  tradeExtraRow.style.display=ch.imports ? 'block':'none';
-  comparisonRow.style.display=(ch.comparison || ch.sector) ? 'block':'none';
+    loginBtn.onclick = async () => {
+      const res = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: loginUser.value, password: loginPass.value }) });
+      if (!res.ok) { alert('Invalid credentials'); return; }
+      const u = await res.json();
+      currentUser = u;
+      loginScreen.style.display = 'none';
+      applyAccessUI();
+    };
 
-  if(trendChart)trendChart.destroy();
-  if(donutChart)donutChart.destroy();
-  if(importChart){importChart.destroy();importChart=null;}
-  if(comparisonChart){comparisonChart.destroy();comparisonChart=null;}
-  if(sectorChart){sectorChart.destroy();sectorChart=null;}
+    logoutBtn.onclick = async () => {
+      await fetch('/api/logout');
+      currentUser = { name: 'Public user', role: 'Viewer' };
+      applyAccessUI();
+    };
 
-  trendChart=new Chart(trendChartEl,{
-    type:ch.main.type,
-    data:{labels:ch.main.labels,datasets:[{data:ch.main.data,backgroundColor:'#14b8a6',borderColor:'#0b2f2e',borderWidth:2}]},
-    options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
-  });
+    applyAccessUI();
 
-  donutChart=new Chart(donutChartEl,{
-    type:ch.side.type,
-    data:{labels:ch.side.labels,datasets:[{data:ch.side.data,backgroundColor:['#14b8a6','#0b2f2e','#0891b2','#0ea5a4','#334155','#64748b','#94a3b8']}]}
-  });
+    // ---------------- DASHBOARD DATA (ALL COMPUTATION IS DONE IN PYTHON BACKEND) ----------------
+    let currentDomain = 'dashboard';
+    let trendChart, donutChart, importChart, comparisonChart, sectorChart;
 
-  if(ch.imports){
-    importChart=new Chart(importChartEl,{type:'bar',data:{labels:ch.imports.labels,datasets:[{data:ch.imports.data,backgroundColor:'#0b2f2e'}]},options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}});
-  }
+    async function loadFilters() {
+      const r = await fetch('/api/filters');
+      const f = await r.json();
 
-  if(ch.comparison){
-    comparisonChartTitle.textContent=ch.comparison.title;
-    comparisonChart=new Chart(comparisonChartEl,{
-      type:ch.comparison.type,
-      data:{labels:ch.comparison.labels,datasets:ch.comparison.datasets},
-      options:{plugins:{legend:{display:true}},scales:{y:{beginAtZero:true}}}
-    });
-  }
+      yearFilter.innerHTML = '';
+      f.years.forEach(y => yearFilter.add(new Option(y, y)));
 
-  if(ch.sector){
-    sectorChartTitle.textContent=ch.sector.title;
-    sectorChart=new Chart(sectorChartEl,{
-      type:ch.sector.type,
-      data:{labels:ch.sector.labels,datasets:[{data:ch.sector.data,backgroundColor:['#14b8a6','#0b2f2e','#0891b2','#0ea5a4','#334155']}]},
-      options:{plugins:{legend:{display:false}},scales:{y:{beginAtZero:true}}}
-    });
-  }
-}
+      regionFilter.innerHTML = '';
+      regionFilter.add(new Option('National', 'All'));
+      f.regions.forEach(p => regionFilter.add(new Option(p, p)));
 
-function renderTable(t){
-  const table=dataTable;
-  if(!t.rows.length){table.innerHTML='';return;}
-  let h='<thead><tr>';
-  t.columns.forEach(c=>h+=`<th>${c}</th>`);
-  h+='</tr></thead><tbody>';
-  t.rows.forEach(r=>{
-    h+='<tr>';
-    t.columns.forEach(c=>h+=`<td>${r[c]}</td>`);
-    h+='</tr>';
-  });
-  h+='</tbody>';
-  table.innerHTML=h;
-}
+      genderFilter.innerHTML = '';
+      f.genders.forEach(g => genderFilter.add(new Option(g, g)));
 
-function renderInsights(items){
-  insights.innerHTML='';
-  items.forEach(i=>insights.innerHTML+=`<li>${i}</li>`);
-}
-
-// ---------------- EXPORT & DATA MANAGEMENT ----------------
-exportBtn.onclick=()=>{
-  const q=new URLSearchParams(getFilterState()).toString();
-  window.location='/api/export?'+q;
-};
-
-addRowBtn.onclick=async()=>{
-  if(currentUser.role==='Viewer') return alert('Login required');
-  await fetch('/api/data/create',{method:'POST'});
-  refreshDashboard();
-};
-
-deleteFilteredBtn.onclick=async()=>{
-  if(currentUser.role==='Viewer') return alert('Login required');
-  await fetch('/api/data/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(getFilterState())});
-  refreshDashboard();
-};
-
-let previewData=null;
-
-previewBtn.onclick=async()=>{
-  if(currentUser.role==='Viewer') return alert('Login required');
-  const f=fileInput.files[0]; if(!f)return;
-  const fd=new FormData(); fd.append('file',f);
-  try{
-    const res=await fetch('/api/data/upload/preview',{method:'POST',body:fd});
-    const data=await res.json();
-    if(data.error){alert(data.error);return;}
-    previewData=data;
-    previewArea.style.display='block';
-    previewContent.innerHTML='';
-    const sheets=Object.keys(data.sheets);
-    sheetSelect.innerHTML='';
-    sheets.forEach(sheet=>{
-      const info=data.sheets[sheet];
-      sheetSelect.add(new Option(`${sheet} (${info.total_rows} rows)`,sheet));
-      const div=document.createElement('div');
-      div.className='mb-3';
-      div.innerHTML=`<strong>${sheet}:</strong> ${info.columns.length} columns, ${info.total_rows} rows<br>
-        <small class="text-muted">Columns: ${info.columns.slice(0,5).join(', ')}${info.columns.length>5?'...':''}</small>`;
-      previewContent.appendChild(div);
-    });
-    if(sheets.length===1) sheetSelect.style.display='none';
-    else sheetSelect.style.display='block';
-  }catch(e){alert('Preview failed: '+e.message);}
-};
-
-uploadBtn.onclick=async()=>{
-  if(currentUser.role==='Viewer') return alert('Login required');
-  const f=fileInput.files[0]; if(!f){alert('Please select a file');return;}
-  const domain=uploadDomain.value;
-  const sheet=sheetSelect.value||null;
-  const fd=new FormData();
-  fd.append('file',f);
-  fd.append('domain',domain);
-  if(sheet) fd.append('sheet_name',sheet);
-  fd.append('create_table','true');
-  
-  uploadStatus.style.display='block';
-  uploadStatus.className='alert alert-info';
-  uploadStatus.textContent='Uploading...';
-  
-  try{
-    const res=await fetch('/api/data/upload',{method:'POST',body:fd});
-    const data=await res.json();
-    if(data.error){
-      uploadStatus.className='alert alert-danger';
-      uploadStatus.textContent='Error: '+data.error;
-      return;
+      ageFilter.innerHTML = '';
+      f.ages.forEach(a => ageFilter.add(new Option(a, a)));
     }
-    uploadStatus.className='alert alert-success';
-    uploadStatus.textContent=`Successfully uploaded ${data.total_sheets} sheet(s). ${data.results.map(r=>`${r.rows} rows`).join(', ')}`;
-    previewArea.style.display='none';
-    fileInput.value='';
-    loadUploadsList();
-    setTimeout(()=>refreshDashboard(),500);
-  }catch(e){
-    uploadStatus.className='alert alert-danger';
-    uploadStatus.textContent='Upload failed: '+e.message;
-  }
-};
 
-refreshUploadsBtn.onclick=loadUploadsList;
-
-async function loadUploadsList(){
-  if(currentUser.role==='Viewer') return;
-  try{
-    const res=await fetch('/api/data/uploads');
-    const data=await res.json();
-    if(data.error){console.error(data.error);return;}
-    const tbody=uploadsTableBody;
-    tbody.innerHTML='';
-    if(data.uploads.length===0){
-      tbody.innerHTML='<tr><td colspan="7" class="text-center text-muted">No uploads yet</td></tr>';
-      return;
+    function getFilterState() {
+      return {
+        domain: currentDomain,
+        year: yearFilter.value,
+        region: regionFilter.value,
+        gender: genderFilter.value,
+        age: ageFilter.value,
+        search: globalSearch.value
+      };
     }
-    data.uploads.forEach(upload=>{
-      const tr=document.createElement('tr');
-      const date=new Date(upload.upload_time);
-      tr.innerHTML=`
+
+    async function refreshDashboard() {
+      const res = await fetch('/api/dashboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(getFilterState())
+      });
+
+      const payload = await res.json();
+
+      renderKPIs(payload.kpis);
+      renderCharts(payload.charts);
+      renderTable(payload.table);
+      renderInsights(payload.insights);
+
+      domainTitle.textContent = payload.title;
+    }
+
+    function renderKPIs(kpis) {
+      for (let i = 1; i <= 8; i++) {
+        const card = document.getElementById('kpiLabel' + (i)).parentElement.parentElement;
+        card.style.display = 'none';
+      }
+      kpis.forEach((k, i) => {
+        if (i < 8) {
+          const card = document.getElementById('kpiLabel' + (i + 1)).parentElement.parentElement;
+          card.style.display = 'block';
+          document.getElementById('kpiLabel' + (i + 1)).textContent = k.label;
+          document.getElementById('kpi' + (i + 1)).textContent = k.value;
+        }
+      });
+    }
+
+    function renderCharts(ch) {
+      mainChartTitle.textContent = ch.main.title;
+      sideChartTitle.textContent = ch.side.title;
+
+      tradeExtraRow.style.display = ch.imports ? 'block' : 'none';
+      comparisonRow.style.display = (ch.comparison || ch.sector) ? 'block' : 'none';
+
+      if (trendChart) trendChart.destroy();
+      if (donutChart) donutChart.destroy();
+      if (importChart) { importChart.destroy(); importChart = null; }
+      if (comparisonChart) { comparisonChart.destroy(); comparisonChart = null; }
+      if (sectorChart) { sectorChart.destroy(); sectorChart = null; }
+
+      trendChart = new Chart(trendChartEl, {
+        type: ch.main.type,
+        data: { labels: ch.main.labels, datasets: [{ data: ch.main.data, backgroundColor: '#14b8a6', borderColor: '#0b2f2e', borderWidth: 2 }] },
+        options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+      });
+
+      donutChart = new Chart(donutChartEl, {
+        type: ch.side.type,
+        data: { labels: ch.side.labels, datasets: [{ data: ch.side.data, backgroundColor: ['#14b8a6', '#0b2f2e', '#0891b2', '#0ea5a4', '#334155', '#64748b', '#94a3b8'] }] }
+      });
+
+      if (ch.imports) {
+        importChart = new Chart(importChartEl, { type: 'bar', data: { labels: ch.imports.labels, datasets: [{ data: ch.imports.data, backgroundColor: '#0b2f2e' }] }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } } });
+      }
+
+      if (ch.comparison) {
+        comparisonChartTitle.textContent = ch.comparison.title;
+        comparisonChart = new Chart(comparisonChartEl, {
+          type: ch.comparison.type,
+          data: { labels: ch.comparison.labels, datasets: ch.comparison.datasets },
+          options: { plugins: { legend: { display: true } }, scales: { y: { beginAtZero: true } } }
+        });
+      }
+
+      if (ch.sector) {
+        sectorChartTitle.textContent = ch.sector.title;
+        sectorChart = new Chart(sectorChartEl, {
+          type: ch.sector.type,
+          data: { labels: ch.sector.labels, datasets: [{ data: ch.sector.data, backgroundColor: ['#14b8a6', '#0b2f2e', '#0891b2', '#0ea5a4', '#334155'] }] },
+          options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+        });
+      }
+    }
+
+    function renderTable(t) {
+      const table = dataTable;
+      if (!t.rows.length) { table.innerHTML = ''; return; }
+      let h = '<thead><tr>';
+      t.columns.forEach(c => h += `<th>${c}</th>`);
+      h += '</tr></thead><tbody>';
+      t.rows.forEach(r => {
+        h += '<tr>';
+        t.columns.forEach(c => h += `<td>${r[c]}</td>`);
+        h += '</tr>';
+      });
+      h += '</tbody>';
+      table.innerHTML = h;
+    }
+
+    function renderInsights(items) {
+      insights.innerHTML = '';
+      items.forEach(i => insights.innerHTML += `<li>${i}</li>`);
+    }
+
+    // ---------------- EXPORT & DATA MANAGEMENT ----------------
+    exportBtn.onclick = () => {
+      const q = new URLSearchParams(getFilterState()).toString();
+      window.location = '/api/export?' + q;
+    };
+
+    addRowBtn.onclick = async () => {
+      if (currentUser.role === 'Viewer') return alert('Login required');
+      await fetch('/api/data/create', { method: 'POST' });
+      refreshDashboard();
+    };
+
+    deleteFilteredBtn.onclick = async () => {
+      if (currentUser.role === 'Viewer') return alert('Login required');
+      await fetch('/api/data/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(getFilterState()) });
+      refreshDashboard();
+    };
+
+    let previewData = null;
+
+    previewBtn.onclick = async () => {
+      if (currentUser.role === 'Viewer') return alert('Login required');
+      const f = fileInput.files[0]; if (!f) return;
+      const fd = new FormData(); fd.append('file', f);
+      try {
+        const res = await fetch('/api/data/upload/preview', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        previewData = data;
+        previewArea.style.display = 'block';
+        previewContent.innerHTML = '';
+        const sheets = Object.keys(data.sheets);
+        sheetSelect.innerHTML = '';
+        sheets.forEach(sheet => {
+          const info = data.sheets[sheet];
+          sheetSelect.add(new Option(`${sheet} (${info.total_rows} rows)`, sheet));
+          const div = document.createElement('div');
+          div.className = 'mb-3';
+          div.innerHTML = `<strong>${sheet}:</strong> ${info.columns.length} columns, ${info.total_rows} rows<br>
+        <small class="text-muted">Columns: ${info.columns.slice(0, 5).join(', ')}${info.columns.length > 5 ? '...' : ''}</small>`;
+          previewContent.appendChild(div);
+        });
+        if (sheets.length === 1) sheetSelect.style.display = 'none';
+        else sheetSelect.style.display = 'block';
+      } catch (e) { alert('Preview failed: ' + e.message); }
+    };
+
+    uploadBtn.onclick = async () => {
+      if (currentUser.role === 'Viewer') return alert('Login required');
+      const f = fileInput.files[0]; if (!f) { alert('Please select a file'); return; }
+      const domain = uploadDomain.value;
+      const sheet = sheetSelect.value || null;
+      const fd = new FormData();
+      fd.append('file', f);
+      fd.append('domain', domain);
+      if (sheet) fd.append('sheet_name', sheet);
+      fd.append('create_table', 'true');
+
+      uploadStatus.style.display = 'block';
+      uploadStatus.className = 'alert alert-info';
+      uploadStatus.textContent = 'Uploading...';
+
+      try {
+        const res = await fetch('/api/data/upload', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (data.error) {
+          uploadStatus.className = 'alert alert-danger';
+          uploadStatus.textContent = 'Error: ' + data.error;
+          return;
+        }
+        uploadStatus.className = 'alert alert-success';
+        uploadStatus.textContent = `Successfully uploaded ${data.total_sheets} sheet(s). ${data.results.map(r => `${r.rows} rows`).join(', ')}`;
+        previewArea.style.display = 'none';
+        fileInput.value = '';
+        loadUploadsList();
+        setTimeout(() => refreshDashboard(), 500);
+      } catch (e) {
+        uploadStatus.className = 'alert alert-danger';
+        uploadStatus.textContent = 'Upload failed: ' + e.message;
+      }
+    };
+
+    refreshUploadsBtn.onclick = loadUploadsList;
+
+    async function loadUploadsList() {
+      if (currentUser.role === 'Viewer') return;
+      try {
+        const res = await fetch('/api/data/uploads');
+        const data = await res.json();
+        if (data.error) { console.error(data.error); return; }
+        const tbody = uploadsTableBody;
+        tbody.innerHTML = '';
+        if (data.uploads.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No uploads yet</td></tr>';
+          return;
+        }
+        data.uploads.forEach(upload => {
+          const tr = document.createElement('tr');
+          const date = new Date(upload.upload_time);
+          tr.innerHTML = `
         <td>${upload.filename}</td>
         <td><span class="badge bg-secondary">${upload.domain}</span></td>
-        <td>${upload.sheet_name||'N/A'}</td>
-        <td>${upload.rows_count||0}</td>
-        <td>${upload.columns_count||0}</td>
+        <td>${upload.sheet_name || 'N/A'}</td>
+        <td>${upload.rows_count || 0}</td>
+        <td>${upload.columns_count || 0}</td>
         <td><small>${date.toLocaleDateString()}</small></td>
         <td><button class="btn btn-sm btn-outline-danger" onclick="deleteUpload(${upload.id})">Delete</button></td>
       `;
-      tbody.appendChild(tr);
+          tbody.appendChild(tr);
+        });
+      } catch (e) { console.error('Failed to load uploads:', e); }
+    }
+
+    async function deleteUpload(id) {
+      if (!confirm('Delete this upload and its table?')) return;
+      try {
+        const res = await fetch(`/api/data/upload/${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (data.error) { alert(data.error); return; }
+        loadUploadsList();
+        refreshDashboard();
+      } catch (e) { alert('Delete failed: ' + e.message); }
+    }
+
+    // ---------------- MAP ----------------
+    const map = L.map('map').setView([-19, 29.5], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
+
+    const trendChartEl = document.getElementById('trendChart');
+    const donutChartEl = document.getElementById('donutChart');
+    const importChartEl = document.getElementById('importChart');
+    const comparisonChartEl = document.getElementById('comparisonChart');
+    const sectorChartEl = document.getElementById('sectorChart');
+    const comparisonChartTitle = document.getElementById('comparisonChartTitle');
+    const sectorChartTitle = document.getElementById('sectorChartTitle');
+
+    [...document.querySelectorAll('.sidebar a')].forEach(a => a.onclick = () => {
+      document.querySelectorAll('.sidebar a').forEach(x => x.classList.remove('active'));
+      a.classList.add('active');
+      currentDomain = a.dataset.domain;
+      refreshDashboard();
     });
-  }catch(e){console.error('Failed to load uploads:',e);}
-}
 
-async function deleteUpload(id){
-  if(!confirm('Delete this upload and its table?')) return;
-  try{
-    const res=await fetch(`/api/data/upload/${id}`,{method:'DELETE'});
-    const data=await res.json();
-    if(data.error){alert(data.error);return;}
-    loadUploadsList();
-    refreshDashboard();
-  }catch(e){alert('Delete failed: '+e.message);}
-}
+    [yearFilter, regionFilter, genderFilter, ageFilter].forEach(i => i.onchange = refreshDashboard);
+    globalSearch.oninput = () => { clearTimeout(window._s); window._s = setTimeout(refreshDashboard, 300) };
 
-// loadUploadsList will be called by applyAccessUI when admin logs in
+    // ---------------- BOOTSTRAP ----------------
+    (async () => {
+      await loadFilters();
+      await refreshDashboard();
+    })();
 
-// ---------------- MAP ----------------
-const map=L.map('map').setView([-19,29.5],6);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:18}).addTo(map);
-
-const trendChartEl=document.getElementById('trendChart');
-const donutChartEl=document.getElementById('donutChart');
-const importChartEl=document.getElementById('importChart');
-const comparisonChartEl=document.getElementById('comparisonChart');
-const sectorChartEl=document.getElementById('sectorChart');
-const comparisonChartTitle=document.getElementById('comparisonChartTitle');
-const sectorChartTitle=document.getElementById('sectorChartTitle');
-
-[...document.querySelectorAll('.sidebar a')].forEach(a=>a.onclick=()=>{
- document.querySelectorAll('.sidebar a').forEach(x=>x.classList.remove('active'));
- a.classList.add('active');
- currentDomain=a.dataset.domain;
- refreshDashboard();
-});
-
-[yearFilter,regionFilter,genderFilter,ageFilter].forEach(i=>i.onchange=refreshDashboard);
-globalSearch.oninput=()=>{clearTimeout(window._s);window._s=setTimeout(refreshDashboard,300)};
-
-// ---------------- BOOTSTRAP ----------------
-(async()=>{
-  await loadFilters();
-  await refreshDashboard();
-})();
-
-// ---------------- TESTS ----------------
-console.assert(currentUser.role==='Viewer','System must start in viewer mode');
-</script>
+    // ---------------- TESTS ----------------
+    console.assert(currentUser.role === 'Viewer', 'System must start in viewer mode');
+  </script>
 </body>
+
 </html>

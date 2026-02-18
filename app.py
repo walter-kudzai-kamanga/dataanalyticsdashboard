@@ -142,106 +142,177 @@ def find_tables_by_keywords(keywords, mode='all'):
     """Return tables that contain all (or any) of the keywords in their name."""
     tables = get_all_table_names()
     matches = []
+    
+    # Expand keywords with common domain aliases
+    aliases = {
+        'employment': ['labour', 'job', 'empl'],
+        'labour': ['employment', 'job', 'empl'],
+        'gdp': ['economy', 'provincial'],
+        'cpi': ['inflation', 'price'],
+        'trade': ['export', 'import']
+    }
+    
+    expanded_keywords = []
+    for kw in keywords:
+        kw_list = [kw.lower()]
+        if kw.lower() in aliases:
+            kw_list.extend(aliases[kw.lower()])
+        expanded_keywords.append(kw_list)
+
     for tbl in tables:
         tbl_lower = tbl.lower()
+        
+        # Check if table matches keywords (at least one alias from each required keyword group)
         if mode == 'all':
-            if all(kw.lower() in tbl_lower for kw in keywords):
+            match = True
+            for group in expanded_keywords:
+                if not any(alias in tbl_lower for alias in group):
+                    match = False
+                    break
+            if match:
                 matches.append(tbl)
         else:  # any
-            if any(kw.lower() in tbl_lower for kw in keywords):
+            if any(any(alias in tbl_lower for alias in group) for group in expanded_keywords):
                 matches.append(tbl)
     return matches
 
-def safe_float(val):
-    try:
-        return float(val)
-    except:
-        return 0.0
-
-# ----------------------------------------------------------------------
-# Labour domain – real queries
-# ----------------------------------------------------------------------
-def query_labour_kpis(filters):
-    """Extract total employed, unemployed, labour force, unemployment rate."""
+def find_data_total(keywords, indicator_names, filters=None, mode='all'):
+    """
+    Flexible data discovery with aggregation across all matching tables.
+    - keywords: list of keywords to find tables.
+    - indicator_names: list of possible indicator names (row values) or column names.
+    - filters: dict of filters (year, region, etc.)
+    """
+    filters = filters or {}
     year = filters.get('year')
     region = filters.get('region')
     gender = filters.get('gender')
-    age = filters.get('age')
-
-    employed = unemployed = labour_force = None
-
-    # First, try to get employment from WIDE EMPLOYMENT BY PROVINCE table (has Male/Female columns)
-    emp_tables = find_tables_by_keywords(['employment', 'province', 'sex'], mode='any')
-    for tbl in emp_tables:
+    
+    tables = find_tables_by_keywords(keywords, mode=mode)
+    total_value = 0.0
+    found_any = False
+    
+    for tbl in tables:
         cols = guess_column_names(tbl)
-        # Check if this is the WIDE table with Male/Female columns
-        if 'Male' in cols and 'Female' in cols and 'Province' in cols:
+        cols_lower = [c.lower().replace('_', ' ').replace('.', ' ') for c in cols]
+        
+        # indicator_names expansion for lenient matching
+        search_names = [n.lower().replace('_', ' ').replace('.', ' ') for n in indicator_names]
+        
+        # 1. Check if ANY indicator_name matches a COLUMN (Wide format)
+        target_cols = []
+        for i, c in enumerate(cols_lower):
+            if c in search_names:
+                target_cols.append(cols[i])
+        
+        if target_cols:
             try:
-                # Apply filters
-                q = f'SELECT SUM("Male" + "Female") FROM "{tbl}"'
-                params = []
                 conditions = []
+                params = []
                 
-                if region and region != 'All' and 'Province' in cols:
-                    conditions.append('"Province" = ?')
-                    params.append(region)
+                # Apply Region filter
+                if region and region != 'All':
+                    for i, c in enumerate(cols_lower):
+                        if c in ['province', 'region']:
+                            conditions.append(f'TRIM("{cols[i]}") COLLATE NOCASE = ?')
+                            params.append(region.strip())
+                            break
                 
-                if gender and gender in ['Male', 'Female']:
-                    # Use only the specified gender column
-                    q = f'SELECT SUM("{gender}") FROM "{tbl}"'
-                    if conditions:
-                        q += ' WHERE ' + ' AND '.join(conditions)
-                elif conditions:
+                # Apply Year filter
+                if year:
+                    for i, c in enumerate(cols_lower):
+                        if c in ['year', 'date', 'period']:
+                            # Simple robust match
+                            conditions.append(f'(CAST("{cols[i]}" AS TEXT) LIKE ? OR CAST("{cols[i]}" AS REAL) = ?)')
+                            try:
+                                y_val = float(year)
+                                params.extend([f'{int(y_val)}%', y_val])
+                            except:
+                                params.extend([f'{year}%', year])
+                            break
+
+                sum_expr = '+'.join([f'IFNULL("{c}", 0)' for c in target_cols])
+                q = f'SELECT SUM({sum_expr}) FROM "{tbl}"'
+                if conditions:
                     q += ' WHERE ' + ' AND '.join(conditions)
                 
                 res = query_db(q, params, one=True)
-                if res and res[0]:
-                    employed = safe_float(res[0])
-                    break
+                if res and res[0] is not None:
+                    try:
+                        total_value += float(res[0])
+                        found_any = True
+                        # If we found data in WIDE format, don't try LONG format for this same table
+                        continue 
+                    except: pass
             except Exception as e:
-                continue
+                # print(f"DEBUG Wide ERROR: {e}")
+                pass
 
-    # Get unemployment and labour force from QLFS table
-    qlfs_tables = find_tables_by_keywords(['qlfs', 'province'], mode='any')
-    for tbl in qlfs_tables:
-        cols = guess_column_names(tbl)
-        if 'Indicator' in cols and 'Value' in cols:
+        # 2. Check if Indicators are ROW values (Long format)
+        ind_col = None
+        val_col = None
+        for i, c in enumerate(cols_lower):
+            if c in ['indicator', 'item']: ind_col = cols[i]
+            if c in ['value']: val_col = cols[i]
+        
+        if ind_col and val_col:
             try:
-                # Build query with filters
-                conditions = ['"Indicator" = ?']
-                params = ['unemployed']
+                # Use lenient indicator names for matching
+                placeholders = ",".join(["?"] * len(search_names))
+                conditions = [f'LOWER(REPLACE(REPLACE("{ind_col}", "_", " "), ".", " ")) IN ({placeholders})']
+                params = list(search_names)
                 
-                if region and region != 'All' and 'Province' in cols:
-                    conditions.append('"Province" = ?')
-                    params.append(region)
+                if region and region != 'All':
+                    for i, c in enumerate(cols_lower):
+                        if c in ['province', 'region']:
+                            conditions.append(f'TRIM("{cols[i]}") COLLATE NOCASE = ?')
+                            params.append(region.strip())
+                            break
                 
-                if gender and 'Sex' in cols:
-                    conditions.append('"Sex" = ?')
-                    params.append(gender.lower())
-                
-                q = f'SELECT SUM("Value") FROM "{tbl}" WHERE ' + ' AND '.join(conditions)
-                res = query_db(q, params, one=True)
-                if res and res[0]:
-                    unemployed = safe_float(res[0])
+                if year:
+                    for i, c in enumerate(cols_lower):
+                        if c in ['year', 'date']:
+                            # Using the same robust year logic as Wide format
+                            conditions.append(f'(CAST("{cols[i]}" AS TEXT) LIKE ? OR CAST("{cols[i]}" AS REAL) = ?)')
+                            try:
+                                y_val = float(year)
+                                params.extend([f'{int(y_val)}%', y_val])
+                            except:
+                                params.extend([f'{year}%', year])
+                            break
 
-                # Get total labour force with same filters
-                params[0] = 'labour_force'
-                q = f'SELECT SUM("Value") FROM "{tbl}" WHERE ' + ' AND '.join(conditions)
                 res = query_db(q, params, one=True)
-                if res and res[0]:
-                    labour_force = safe_float(res[0])
-                    break
-            except Exception as e:
-                continue
+                if res and res[0] is not None:
+                    try:
+                        total_value += float(res[0])
+                        found_any = True
+                    except: pass
+            except:
+                pass
+                
+    return total_value if found_any else None
 
-    # Fallback if not found
+def query_labour_kpis(filters):
+    """Extract total employed, unemployed, labour force, unemployment rate."""
+    employed = find_data_total(['employment', 'province'], ['employed', 'total employed', 'male', 'female'], filters)
+    unemployed = find_data_total(['qlfs', 'province'], ['unemployed'], filters)
+    labour_force = find_data_total(['qlfs', 'province'], ['labour_force', 'labour force'], filters)
+
+    # Specific check for Male/Female columns if 'employed' wasn't found as a block
     if employed is None:
-        employed = 5821  # fallback (thousands)
-    if unemployed is None:
-        unemployed = 550  # fallback
-    if labour_force is None:
-        labour_force = employed + unemployed if employed and unemployed else employed * 1.087  # approx
-    unemp_rate = (unemployed / labour_force * 100) if labour_force and unemployed else 8.7
+        # Try summing Male + Female from a wide table
+        m = find_data_total(['employment', 'province'], ['Male'], filters)
+        f = find_data_total(['employment', 'province'], ['Female'], filters)
+        if m is not None or f is not None:
+            employed = (m or 0) + (f or 0)
+
+    # Removing misleading fallbacks - show 0 or N/A if not found
+    if employed is None: employed = 0
+    if unemployed is None: unemployed = 0
+    if labour_force is None: 
+        labour_force = employed + unemployed if (employed or unemployed) else 0
+    
+    unemp_rate = (unemployed / labour_force * 100) if labour_force > 0 else 0
 
     return {
         'employed': employed,
@@ -298,94 +369,39 @@ def query_labour_by_province(filters):
 # ----------------------------------------------------------------------
 def query_gdp_kpis(filters):
     """Extract GDP, growth, per capita, sector share."""
-    year = filters.get('year', '2025')
-    try:
-        year_float = float(year)
-    except:
-        year_float = 2025.0
+    # Try multiple indicator names for GDP
+    total_gdp_raw = find_data_total(['gdp'], ['Gdp At Market Prices Usd', 'gdp_at_market_prices_usd', 'GDP', 'Value'], filters)
     
-    gdp_tables = find_tables_by_keywords(['gdp', 'provincial'], mode='any')
-    total_gdp = None
-    prev_gdp = None
-    per_capita = None
+    # If not found for specific year, try to get latest available
+    if total_gdp_raw is None:
+        # We could implement a MAX(Date) logic inside find_data_total, 
+        # but for now we'll stick to the requested year or latest row
+        pass
 
-    # Look for WIDE PROV GDP ALL YEARS table with Gdp At Market Prices Usd column
-    for tbl in gdp_tables:
-        cols = guess_column_names(tbl)
-        if 'Gdp At Market Prices Usd' in cols and 'Date' in cols:
-            try:
-                # Apply region filter if specified
-                region = filters.get('region')
-                conditions = ['"Date" = ?', '"Gdp At Market Prices Usd" IS NOT NULL']
-                params = [year_float]
-                
-                if region and region != 'All' and 'Province' in cols:
-                    conditions.append('"Province" = ?')
-                    params.append(region)
-                
-                # Sum GDP for current year (check if data exists)
-                q = f'SELECT SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE ' + ' AND '.join(conditions)
-                res = query_db(q, params, one=True)
-                if res and res[0]:
-                    total_gdp = safe_float(res[0]) / 1e9  # convert to billions
-                else:
-                    # Try to get most recent year with data
-                    q_conditions = ['"Gdp At Market Prices Usd" IS NOT NULL']
-                    if region and region != 'All' and 'Province' in cols:
-                        q_conditions.append('"Province" = ?')
-                    q = f'SELECT MAX("Date") FROM "{tbl}" WHERE ' + ' AND '.join(q_conditions)
-                    res = query_db(q, [region] if region and region != 'All' else [], one=True)
-                    if res and res[0]:
-                        latest_year = float(res[0])
-                        params[0] = latest_year
-                        q = f'SELECT SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE ' + ' AND '.join(conditions)
-                        res = query_db(q, params, one=True)
-                        if res and res[0]:
-                            total_gdp = safe_float(res[0]) / 1e9
-                            year_float = latest_year  # Update to use the year with data
-                
-                # Get per capita GDP
-                if 'Per Capita Gdp In Usd' in cols and total_gdp:
-                    q_conditions = ['"Date" = ?', '"Per Capita Gdp In Usd" IS NOT NULL']
-                    q_params = [year_float]
-                    if region and region != 'All' and 'Province' in cols:
-                        q_conditions.append('"Province" = ?')
-                        q_params.append(region)
-                    q = f'SELECT AVG("Per Capita Gdp In Usd") FROM "{tbl}" WHERE ' + ' AND '.join(q_conditions)
-                    res = query_db(q, q_params, one=True)
-                    if res and res[0]:
-                        per_capita = safe_float(res[0])
-                
-                # Previous year for growth
-                if total_gdp:
-                    prev_year = year_float - 1
-                    prev_conditions = ['"Date" = ?', '"Gdp At Market Prices Usd" IS NOT NULL']
-                    prev_params = [prev_year]
-                    if region and region != 'All' and 'Province' in cols:
-                        prev_conditions.append('"Province" = ?')
-                        prev_params.append(region)
-                    q = f'SELECT SUM("Gdp At Market Prices Usd") FROM "{tbl}" WHERE ' + ' AND '.join(prev_conditions)
-                    res = query_db(q, prev_params, one=True)
-                    if res and res[0]:
-                        prev_gdp = safe_float(res[0]) / 1e9
-                break
-            except Exception as e:
-                continue
+    total_gdp = (total_gdp_raw / 1e9) if total_gdp_raw else 0 # convert to billions
+    
+    # Growth Calculation
+    growth = 0
+    if total_gdp > 0:
+        year = filters.get('year')
+        if year:
+            prev_filters = filters.copy()
+            prev_filters['year'] = str(float(year) - 1)
+            prev_gdp_raw = find_data_total(['gdp', 'provincial'], ['Gdp At Market Prices Usd', 'gdp_at_market_prices_usd', 'GDP'], prev_filters)
+            if prev_gdp_raw:
+                prev_gdp = prev_gdp_raw / 1e9
+                growth = ((total_gdp - prev_gdp) / prev_gdp * 100)
 
-    if total_gdp is None:
-        total_gdp = 32.4   # billion USD fallback
-    if prev_gdp is None:
-        growth = 2.3
-    else:
-        growth = ((total_gdp - prev_gdp) / prev_gdp * 100) if prev_gdp else 2.3
-    if per_capita is None:
-        per_capita = total_gdp * 1e9 / 15.0e6 if total_gdp else 1.987  # rough population estimate
+    # Per Capita
+    per_capita = find_data_total(['gdp', 'provincial'], ['Per Capita Gdp In Usd', 'per_capita_gdp'], filters)
+    if not per_capita and total_gdp > 0:
+        per_capita = (total_gdp * 1e9) / 15.0e6 # rough estimate
 
     return {
         'gdp': total_gdp,
         'growth': growth,
-        'per_capita': per_capita,
-        'agri_share': 11.2   # could query sector tables
+        'per_capita': per_capita or 0,
+        'agri_share': find_data_total(['gdp', 'sector'], ['agriculture', 'Agriculture share'], filters) or 0
     }
 
 def query_gdp_by_sector(filters):
@@ -443,79 +459,15 @@ def query_gdp_by_sector(filters):
 # ----------------------------------------------------------------------
 def query_cpi_kpis(filters):
     """CPI index, MoM, YoY inflation."""
-    year = filters.get('year')
-    cpi_tables = find_tables_by_keywords(['cpi', 'inflation'], mode='any')
-    cpi_value = None
-    yoy_inflation = None
-    mom_inflation = None
-    
-    # Look for LONG CPI WEIGHTED ANNUAL SUMMARY table
-    for tbl in cpi_tables:
-        cols = guess_column_names(tbl)
-        if 'Category' in cols and 'Item' in cols and 'Value' in cols:
-            try:
-                # Apply year filter if specified
-                if year:
-                    # Category might be year (e.g., "2024", "2025")
-                    row = query_db(f'SELECT "Value" FROM "{tbl}" WHERE "Item" = ? AND "Category" = ? ORDER BY "Category" DESC LIMIT 1', ['all_items', str(year)], one=True)
-                    if row:
-                        cpi_value = safe_float(row['Value'])
-                        break
-                
-                # Fallback: Get latest CPI all_items value
-                if cpi_value is None:
-                    row = query_db(f'SELECT "Value" FROM "{tbl}" WHERE "Item" = ? ORDER BY "Category" DESC LIMIT 1', ['all_items'], one=True)
-                    if row:
-                        cpi_value = safe_float(row['Value'])
-                        break
-            except Exception as e:
-                continue
-    
-    # Try to get YoY and MoM inflation from WIDE CPI WEIGHTED MONTHLY AND YEARLY INFLATION table
-    for tbl in cpi_tables:
-        cols = guess_column_names(tbl)
-        if 'Inflation.Rate.Percent.Annual' in cols and 'Inflation.Rate.Percent.Monthly' in cols:
-            try:
-                # Get most recent YoY and MoM inflation
-                row = query_db(f'SELECT "Inflation.Rate.Percent.Annual", "Inflation.Rate.Percent.Monthly" FROM "{tbl}" ORDER BY rowid DESC LIMIT 1', one=True)
-                if row:
-                    yoy_inflation = safe_float(row['Inflation.Rate.Percent.Annual'])
-                    mom_inflation = safe_float(row['Inflation.Rate.Percent.Monthly'])
-                    break
-            except Exception as e:
-                continue
-    
-    # Fallback: try LONG table with Indicator column
-    if yoy_inflation is None:
-        for tbl in cpi_tables:
-            cols = guess_column_names(tbl)
-            if 'Indicator' in cols and 'Value' in cols:
-                try:
-                    # Get annual inflation rate
-                    row = query_db(f'SELECT "Value" FROM "{tbl}" WHERE "Indicator" = ? ORDER BY rowid DESC LIMIT 1', ['inflation_rate_percent_annual'], one=True)
-                    if row:
-                        yoy_inflation = safe_float(row['Value'])
-                    # Get monthly inflation rate
-                    row = query_db(f'SELECT "Value" FROM "{tbl}" WHERE "Indicator" = ? ORDER BY rowid DESC LIMIT 1', ['inflation_rate_percent_monthly'], one=True)
-                    if row:
-                        mom_inflation = safe_float(row['Value'])
-                    if yoy_inflation:
-                        break
-                except:
-                    pass
-    
-    if cpi_value is None:
-        cpi_value = 105.2
-    if yoy_inflation is None:
-        yoy_inflation = 12.1
-    if mom_inflation is None:
-        mom_inflation = 0.8
+    cpi_value = find_data_total(['cpi', 'inflation'], ['all items', 'All Items', 'cpi_index'], filters)
+    yoy = find_data_total(['cpi', 'inflation'], ['inflation_rate_percent_annual', 'Inflation.Rate.Percent.Annual', 'Annual Inflation'], filters)
+    mom = find_data_total(['cpi', 'inflation'], ['inflation_rate_percent_monthly', 'Inflation.Rate.Percent.Monthly', 'Monthly Inflation'], filters)
     
     return {
-        'cpi': cpi_value,
-        'mom': mom_inflation,
-        'yoy': yoy_inflation,
-        'food': 13.5
+        'cpi': cpi_value or 0,
+        'mom': mom or 0,
+        'yoy': yoy or 0,
+        'food': find_data_total(['cpi', 'inflation'], ['food', 'Food Inflation'], filters) or 0
     }
 
 # ----------------------------------------------------------------------
@@ -523,72 +475,19 @@ def query_cpi_kpis(filters):
 # ----------------------------------------------------------------------
 def query_trade_kpis(filters):
     """Exports, imports, balance."""
-    year = filters.get('year')
-    trade_tables = find_tables_by_keywords(['trade', 'summary'], mode='any')
-    exports = imports = None
+    exports = find_data_total(['trade', 'summary'], ['Total.Exports', 'Total Exports', 'exports'], filters)
+    imports = find_data_total(['trade', 'summary'], ['Imports', 'imports'], filters)
 
-    # Look for TRADE SUMMARY table with Total.Exports and Imports columns
-    for tbl in trade_tables:
-        cols = guess_column_names(tbl)
-        if 'Total.Exports' in cols and 'Imports' in cols:
-            try:
-                # Apply year filter if Period column exists
-                if 'Period' in cols and year:
-                    # Try to match year in Period (e.g., "Jan-2023")
-                    year_str = str(year)
-                    rows = query_db(f'SELECT "Total.Exports", "Imports" FROM "{tbl}" WHERE "Period" LIKE ? ORDER BY "Period" DESC LIMIT 1', [f'%-{year_str}'], one=True)
-                    if rows:
-                        exports = safe_float(rows['Total.Exports']) / 1e6
-                        imports = safe_float(rows['Imports']) / 1e6
-                        break
-                
-                # Fallback: Get latest trade data
-                if exports is None:
-                    rows = query_db(f'SELECT "Total.Exports", "Imports" FROM "{tbl}" ORDER BY rowid DESC LIMIT 1', one=True)
-                    if rows:
-                        exports = safe_float(rows['Total.Exports']) / 1e6  # convert to millions
-                        imports = safe_float(rows['Imports']) / 1e6
-                        break
-            except Exception as e:
-                continue
-    
-    # Fallback: try export/import value tables
-    if exports is None or imports is None:
-        exp_tables = find_tables_by_keywords(['export', 'value'], mode='any')
-        for tbl in exp_tables:
-            cols = guess_column_names(tbl)
-            if 'Value' in cols:
-                try:
-                    res = query_db(f'SELECT SUM("Value") FROM "{tbl}"', one=True)
-                    if res and res[0]:
-                        exports = safe_float(res[0]) / 1e6
-                        break
-                except:
-                    pass
-        
-        imp_tables = find_tables_by_keywords(['import', 'value'], mode='any')
-        for tbl in imp_tables:
-            cols = guess_column_names(tbl)
-            if 'Value' in cols:
-                try:
-                    res = query_db(f'SELECT SUM("Value") FROM "{tbl}"', one=True)
-                    if res and res[0]:
-                        imports = safe_float(res[0]) / 1e6
-                        break
-                except:
-                    pass
-
-    if exports is None:
-        exports = 4210
-    if imports is None:
-        imports = 5890
-    balance = exports - imports
-    cover = (exports / imports * 100) if imports else 71.5
+    # Calculate balance
+    exp_val = exports or 0
+    imp_val = imports or 0
+    balance = exp_val - imp_val
+    cover = (exp_val / imp_val * 100) if imp_val > 0 else 0
 
     return {
-        'exports': exports,
-        'imports': imports,
-        'balance': balance,
+        'exports': exp_val / 1e6 if exp_val > 1000000 else exp_val, # auto-scale if not already in millions
+        'imports': imp_val / 1e6 if imp_val > 1000000 else imp_val,
+        'balance': balance / 1e6 if abs(balance) > 1000000 else balance,
         'cover': cover
     }
 
@@ -1149,92 +1048,19 @@ def assemble_trade(filters):
 # Additional KPI queries
 # ----------------------------------------------------------------------
 def query_earnings_kpis(filters):
-    """Average earnings by province and sector."""
-    year = filters.get('year', '2025')
-    try:
-        year_int = int(float(year))
-    except:
-        year_int = 2025
-    
-    earnings_tables = find_tables_by_keywords(['earnings', 'usd', 'province'], mode='any')
-    total_earnings = None
-    avg_earnings = None
-    
-    for tbl in earnings_tables:
-        cols = guess_column_names(tbl)
-        if 'Year' in cols:
-            # Sum all province columns
-            prov_cols = [c for c in cols if c != 'Year']
-            try:
-                q = 'SELECT '
-                for i, col in enumerate(prov_cols):
-                    if i > 0:
-                        q += ' + '
-                    q += f'SUM("{col}")'
-                q += f' FROM "{tbl}" WHERE "Year" = ?'
-                res = query_db(q, [year_int], one=True)
-                if res and res[0]:
-                    total_earnings = safe_float(res[0])
-                    avg_earnings = total_earnings / len(prov_cols) if prov_cols else total_earnings
-                    break
-            except:
-                continue
-    
-    return {
-        'total_earnings': total_earnings or 0,
-        'avg_earnings': avg_earnings or 0
-    }
+    """Average monthly earnings."""
+    val = find_data_total(['earnings', 'income'], ['Average Monthly Earnings', 'Earnings', 'Income'], filters)
+    return {'average': val or 0}
 
 def query_youth_neet(filters):
-    """Youth Not in Education, Employment, or Training."""
-    neet_tables = find_tables_by_keywords(['youth', 'neet'], mode='any')
-    total_neet = None
-    
-    for tbl in neet_tables:
-        cols = guess_column_names(tbl)
-        if 'Male Youth Neet' in cols and 'Female Youth Neet' in cols:
-            try:
-                rows = query_db(f'SELECT SUM("Male Youth Neet" + "Female Youth Neet") FROM "{tbl}"')
-                if rows and rows[0]:
-                    total_neet = safe_float(rows[0][0])
-                    break
-            except:
-                continue
-    
-    return total_neet or 0
+    """Youth Not in Education, Employment or Training."""
+    val = find_data_total(['neet', 'youth'], ['Youth NEET', 'NEET'], filters)
+    return val or 0
 
 def query_informal_employment(filters):
-    """Informal sector employment."""
-    inf_tables = find_tables_by_keywords(['informal', 'employment', 'province'], mode='any')
-    total_informal = None
-    
-    for tbl in inf_tables:
-        cols = guess_column_names(tbl)
-        if 'Male' in cols and 'Female' in cols and 'Province' in cols:
-            try:
-                # Sum Male + Female for all provinces
-                rows = query_db(f'SELECT SUM("Male" + "Female") FROM "{tbl}" WHERE "Province" = ?', ['Male'], one=True)
-                if rows and rows[0]:
-                    total_informal = safe_float(rows[0])
-                    break
-            except:
-                # Try alternative structure
-                try:
-                    prov_cols = [c for c in cols if c not in ['Province', 'Male', 'Female']]
-                    if prov_cols:
-                        total = 0
-                        for col in ['Male', 'Female']:
-                            if col in cols:
-                                rows = query_db(f'SELECT SUM("{col}") FROM "{tbl}"')
-                                if rows and rows[0]:
-                                    total += safe_float(rows[0][0])
-                        if total > 0:
-                            total_informal = total
-                            break
-                except:
-                    continue
-    
-    return total_informal or 0
+    """Number of persons in informal employment."""
+    val = find_data_total(['informal', 'employment'], ['Informal Employment', 'Informal'], filters)
+    return val or 0
 
 def query_sector_distribution(filters):
     """Employment by industry sector."""
@@ -1571,6 +1397,25 @@ def sanitize_table_name(name):
     # Limit length
     return name[:50] if len(name) <= 50 else name[:47] + '_' + str(hash(name))[-3:]
 
+def create_indexes_for_table(cursor, table_name, columns):
+    """Automatically create indexes on frequently filtered columns for performance."""
+    # Common filter columns across all datasets
+    index_targets = ['indicator', 'item', 'year', 'date', 'province', 'region', 'category', 'sex', 'gender']
+    
+    for col in columns:
+        col_lower = col.lower()
+        if any(target in col_lower for target in index_targets):
+            index_name = f"idx_{table_name}_{col_lower}"
+            # Limit index name length for SQLite
+            if len(index_name) > 60:
+                index_name = index_name[:55] + "_" + str(hash(col_lower))[-3:]
+            try:
+                # Use COLLATE NOCASE for faster case-insensitive string filtering
+                cursor.execute(f'CREATE INDEX IF NOT EXISTS "{index_name}" ON "{table_name}" ("{col}" COLLATE NOCASE)')
+            except Exception as e:
+                # print(f"Warning: Could not create index on {table_name}.{col}: {e}")
+                pass
+
 def create_table_from_dataframe(df, table_name, domain):
     """Create a SQLite table from a pandas DataFrame or append to existing table."""
     conn = sqlite3.connect(DATABASE)
@@ -1685,6 +1530,16 @@ def create_table_from_dataframe(df, table_name, domain):
             rows_inserted += 1
     
     conn.commit()
+    
+    # Create indexes after data is inserted for better performance
+    try:
+        cursor = conn.cursor()
+        create_indexes_for_table(cursor, table_name, df_clean.columns)
+        conn.commit()
+    except Exception as e:
+        # print(f"Index creation error: {e}")
+        pass
+        
     conn.close()
     return rows_inserted
 
@@ -1734,16 +1589,10 @@ def api_upload():
             if df.empty:
                 continue
             
-            # Generate table name - use base name to allow appending to existing tables
-            base_name = sanitize_table_name(f"upload_{domain}_{filename.rsplit('.', 1)[0]}_{sheet}")
-            table_name = base_name
-            
-            # Check if table exists before processing (to determine if we're appending)
-            conn_check = sqlite3.connect(DATABASE)
-            cursor_check = conn_check.cursor()
-            cursor_check.execute(f'SELECT name FROM sqlite_master WHERE type="table" AND name="{table_name}"')
-            table_existed_before = cursor_check.fetchone() is not None
-            conn_check.close()
+            # Generate table name - Consolidate into domain-specific master tables
+            # This ensures that all historical data for a domain (e.g., 1990-2025) 
+            # is stored in one place for efficient indexed querying.
+            table_name = sanitize_table_name(f"master_{domain}")
             
             # Store JSON for backward compatibility
             data_json = df.to_json(orient='records', date_format='iso')
