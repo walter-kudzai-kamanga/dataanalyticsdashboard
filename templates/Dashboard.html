@@ -11,10 +11,13 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
     :root {
-      --nav: #0b2f2e;
-      --accent: #14b8a6;
-      --bg: #f4f7fa;
-      --ink: #0f172a
+      --nav: #111111;
+      --accent: #0A08ED;
+      --accent-gold: #D1BC6A;
+      --accent-red: #D00000;
+      --accent-brown: #90583F;
+      --bg: #ffffff;
+      --ink: #111111;
     }
 
     body {
@@ -25,7 +28,7 @@
 
     /* ---- SIDEBAR ---- */
     .sidebar {
-      background: linear-gradient(180deg, #0b2f2e, #083d3b);
+      background: linear-gradient(180deg, #111111, #0A08ED);
       color: #fff;
       transition: transform .3s ease
     }
@@ -43,7 +46,7 @@
 
     .sidebar a.active,
     .sidebar a:hover {
-      background: rgba(15, 185, 168, 0.2);
+      background: rgba(10, 8, 237, 0.18);
       color: #fff
     }
 
@@ -103,6 +106,38 @@
       padding: 12px 18px
     }
 
+    .topbar-brand {
+      min-width: 0;
+    }
+
+    .zimstat-logo {
+      height: 34px;
+      width: auto;
+    }
+
+    .zimstat-agency {
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      background: #111111;
+      color: #ffffff;
+      display: inline-block;
+      padding: 2px 12px;
+      border-radius: 999px;
+      margin-bottom: 2px;
+    }
+
+    .zimstat-subtitle {
+      font-size: 0.85rem;
+      color: var(--accent-brown);
+      font-weight: 500;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      overflow: hidden;
+      max-width: 100%;
+    }
+
     .card {
       border: 0;
       border-radius: 20px;
@@ -148,8 +183,8 @@
     }
 
     .role-badge {
-      background: #ecfeff;
-      color: #0f766e;
+      background: #fdf6e3;
+      color: var(--accent-brown);
       border-radius: 999px;
       padding: 3px 12px;
       font-size: 12px
@@ -159,7 +194,7 @@
     #loginScreen {
       position: fixed;
       inset: 0;
-      background: linear-gradient(135deg, #0b2f2e, #14b8a6);
+      background: linear-gradient(135deg, #0A08ED, #D00000);
       display: none;
       align-items: center;
       justify-content: center;
@@ -190,7 +225,7 @@
       }
 
       #domainTitle {
-        font-size: 0.95rem !important;
+        font-size: 0.9rem !important;
         width: 100%;
       }
 
@@ -251,7 +286,7 @@
 
       <!-- SIDEBAR -->
       <div class="col-auto sidebar p-3" id="sidebar">
-        <h5 class="mb-4">ZimStats</h5>
+        <h5 class="mb-4 text-uppercase fw-bold" style="letter-spacing:0.08em">ZIMSTAT</h5>
         <a class="active" data-domain="dashboard">Dashboard</a>
         <a data-domain="prices">Prices</a>
         <a data-domain="accounts">National Accounts</a>
@@ -278,7 +313,13 @@
             </svg>
           </button>
 
-          <div class="fw-semibold fs-5 me-auto" id="domainTitle">Top‑Level National Analytics</div>
+          <div class="d-flex align-items-center me-auto gap-2 topbar-brand">
+            <img src="/static/zimstat-logo.png" alt="Zimbabwe National Statistics Agency logo" class="zimstat-logo">
+            <div class="min-w-0">
+              <div class="zimstat-agency">Zimbabwe National Statistics Agency</div>
+              <div class="zimstat-subtitle" id="domainTitle">Top‑Level National Analytics</div>
+            </div>
+          </div>
 
           <div class="d-flex align-items-center gap-2 topbar-actions flex-wrap">
             <div class="search-wrap" style="min-width:160px;max-width:300px">
@@ -640,17 +681,17 @@
 
       trendChart = new Chart(trendChartEl, {
         type: ch.main.type,
-        data: { labels: ch.main.labels, datasets: [{ data: ch.main.data, backgroundColor: '#14b8a6', borderColor: '#0b2f2e', borderWidth: 2 }] },
+        data: { labels: ch.main.labels, datasets: [{ data: ch.main.data, backgroundColor: '#0A08ED', borderColor: '#D1BC6A', borderWidth: 2 }] },
         options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
       });
 
       donutChart = new Chart(donutChartEl, {
         type: ch.side.type,
-        data: { labels: ch.side.labels, datasets: [{ data: ch.side.data, backgroundColor: ['#14b8a6', '#0b2f2e', '#0891b2', '#0ea5a4', '#334155', '#64748b', '#94a3b8'] }] }
+        data: { labels: ch.side.labels, datasets: [{ data: ch.side.data, backgroundColor: ['#0A08ED', '#D1BC6A', '#D00000', '#90583F', '#111111', '#64748b', '#94a3b8'] }] }
       });
 
       if (ch.imports) {
-        importChart = new Chart(importChartEl, { type: 'bar', data: { labels: ch.imports.labels, datasets: [{ data: ch.imports.data, backgroundColor: '#0b2f2e' }] }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } } });
+        importChart = new Chart(importChartEl, { type: 'bar', data: { labels: ch.imports.labels, datasets: [{ data: ch.imports.data, backgroundColor: '#0A08ED' }] }, options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } } });
       }
 
       if (ch.comparison) {
@@ -666,7 +707,7 @@
         sectorChartTitle.textContent = ch.sector.title;
         sectorChart = new Chart(sectorChartEl, {
           type: ch.sector.type,
-          data: { labels: ch.sector.labels, datasets: [{ data: ch.sector.data, backgroundColor: ['#14b8a6', '#0b2f2e', '#0891b2', '#0ea5a4', '#334155'] }] },
+          data: { labels: ch.sector.labels, datasets: [{ data: ch.sector.data, backgroundColor: ['#0A08ED', '#D1BC6A', '#D00000', '#90583F', '#111111'] }] },
           options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
         });
       }

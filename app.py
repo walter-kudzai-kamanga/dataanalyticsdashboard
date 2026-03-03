@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import re
+import os
 from datetime import datetime
 from flask import (
     Flask, render_template, request, jsonify, session,
@@ -11,7 +12,7 @@ from flask import (
 import pandas as pd
 import logging
 log = logging.getLogger('werkzeug')
-log.setLevel(logging.ERROR)
+log.setLevel(logging.INFO if os.environ.get("DASHBOARD_ACCESS_LOGS", "0") == "1" else logging.ERROR)
 
 app = Flask(__name__)
 app.secret_key = 'replace-this-with-a-secret-key-for-production'
@@ -1859,4 +1860,7 @@ def distinct_from_table(column_hints, table_pattern=None):
 
 # ----------------------------------------------------------------------
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=9000, debug=False)
+    host = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
+    port = int(os.environ.get("DASHBOARD_PORT", "9000"))
+    debug = os.environ.get("DASHBOARD_DEBUG", "0") == "1"
+    app.run(host=host, port=port, debug=debug)
