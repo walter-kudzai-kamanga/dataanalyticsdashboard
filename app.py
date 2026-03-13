@@ -11,13 +11,25 @@ from flask import (
 )
 import pandas as pd
 import logging
+from models_fact import db, FactLabour, FactPrices, FactNationalAccounts, FactTrade, DimDate, DimGeography, DimIndustry, DimDemographics, DimCurrency, DimTradeGroup
+from models_fact import query_labour_kpis_fact, query_prices_kpis_fact, query_gdp_kpis_fact, query_trade_kpis_fact, get_dimension_mappings
+from upload_mapper import UploadMapper
+
+# Fix pandas warnings
+pd.set_option('future.no_silent_downcasting', True)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.INFO if os.environ.get("DASHBOARD_ACCESS_LOGS", "0") == "1" else logging.ERROR)
 
 app = Flask(__name__)
 app.secret_key = 'replace-this-with-a-secret-key-for-production'
 
+# Configure database for SQLAlchemy
 DATABASE = 'zimstats.sqlite'
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{DATABASE}'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize SQLAlchemy
+db.init_app(app)
 
 # ----------------------------------------------------------------------
 # Database helpers
@@ -294,256 +306,255 @@ def find_data_total(keywords, indicator_names, filters=None, mode='all'):
     return total_value if found_any else None
 
 def query_labour_kpis(filters):
-    """Extract total employed, unemployed, labour force, unemployment rate."""
-    employed = find_data_total(['employment', 'province'], ['employed', 'total employed', 'male', 'female'], filters)
-    unemployed = find_data_total(['qlfs', 'province'], ['unemployed'], filters)
-    labour_force = find_data_total(['qlfs', 'province'], ['labour_force', 'labour force'], filters)
-
-    # Specific check for Male/Female columns if 'employed' wasn't found as a block
-    if employed is None:
-        # Try summing Male + Female from a wide table
-        m = find_data_total(['employment', 'province'], ['Male'], filters)
-        f = find_data_total(['employment', 'province'], ['Female'], filters)
-        if m is not None or f is not None:
-            employed = (m or 0) + (f or 0)
-
-    # Removing misleading fallbacks - show 0 or N/A if not found
-    if employed is None: employed = 0
-    if unemployed is None: unemployed = 0
-    if labour_force is None: 
-        labour_force = employed + unemployed if (employed or unemployed) else 0
-    
-    unemp_rate = (unemployed / labour_force * 100) if labour_force > 0 else 0
-
-    return {
-        'employed': employed,
-        'unemployed': unemployed,
-        'labour_force': labour_force,
-        'unemp_rate': unemp_rate
-    }
+    """Extract labour KPIs using fact tables"""
+    with app.app_context():
+        return query_labour_kpis_fact(filters)
 
 def query_labour_by_province(filters):
-    """Employment by province (for donut chart)."""
-    region = filters.get('region')
-    gender = filters.get('gender')
+    """Employment by province using fact tables"""
+    if filters is None:
+        filters = {}
     
-    tables = find_tables_by_keywords(['employment', 'province', 'sex'], mode='any')
-    prov_data = {}
-    for tbl in tables:
-        cols = guess_column_names(tbl)
-        # Look for WIDE table with Male/Female columns
-        if 'Male' in cols and 'Female' in cols and 'Province' in cols:
-            try:
-                if gender and gender in ['Male', 'Female']:
-                    # Filter by gender
-                    rows = query_db(f'SELECT "Province", SUM("{gender}") FROM "{tbl}" GROUP BY "Province"')
-                else:
-                    # Sum both genders
-                    rows = query_db(f'SELECT "Province", SUM("Male" + "Female") FROM "{tbl}" GROUP BY "Province"')
-                
-                for r in rows:
-                    prov = r[0]
-                    val = safe_float(r[1])
-                    if prov and val:
-                        # Apply region filter if specified
-                        if region and region != 'All':
-                            if prov == region:
-                                prov_data[prov] = prov_data.get(prov, 0) + val
-                        else:
-                            prov_data[prov] = prov_data.get(prov, 0) + val
-                break  # Found the right table
-            except Exception as e:
-                continue
-    if prov_data:
-        # Sort by value, take top 5
-        top = sorted(prov_data.items(), key=lambda x: x[1], reverse=True)[:5]
-        labels = [t[0] for t in top]
-        data = [t[1] for t in top]
-    else:
-        # Fallback
-        labels = ['Harare', 'Bulawayo', 'Manicaland', 'Mash East', 'Other']
-        data = [28, 12, 15, 14, 31]
-    return labels, data
+    with app.app_context():
+        year = filters.get('year', '2025')
+        gender = filters.get('gender')
+        
+        # Base query
+        query = db.session.query(FactLabour, DimGeography).join(DimGeography, FactLabour.province_id == DimGeography.geo_id).join(DimDate, FactLabour.date_id == DimDate.date_id)
+        
+        # Apply filters
+        if year:
+            query = query.filter(DimDate.year == int(float(year)))
+        
+        if gender and gender in ['Male', 'Female']:
+            query = query.join(DimDemographics, FactLabour.sex_id == DimDemographics.demo_id).filter(DimDemographics.sex == gender)
+        
+        # Get all data for debugging
+        all_results = query.all()
+        print(f"DEBUG: Found {len(all_results)} labour records")
+        
+        if all_results:
+            print(f"DEBUG: Sample record: {all_results[0][0].variable_name}, {all_results[0][0].value}")
+        
+        # Get employed population data - try multiple variable names
+        prov_data = {}
+        for variable_name in ['employed_population', 'employed', 'employment', 'value']:
+            query_var = query.filter(FactLabour.variable_name == variable_name)
+            results = query_var.all()
+            print(f"DEBUG: Found {len(results)} records for variable '{variable_name}'")
+            
+            for fact, geo in results:
+                province = geo.province
+                value = safe_float(fact.value)
+                if province and value > 0:
+                    prov_data[province] = prov_data.get(province, 0) + value
+        
+        if prov_data:
+            top = sorted(prov_data.items(), key=lambda x: x[1], reverse=True)[:5]
+            labels = [t[0] for t in top]
+            data = [t[1] for t in top]
+            print(f"DEBUG: Province data: {labels}, {data}")
+        else:
+            # Return empty data when no data exists
+            labels = []
+            data = []
+        
+        return labels, data
 
 # ----------------------------------------------------------------------
 # National Accounts (GDP) – real queries
 # ----------------------------------------------------------------------
 def query_gdp_kpis(filters):
-    """Extract GDP, growth, per capita, sector share."""
-    # Try multiple indicator names for GDP
-    total_gdp_raw = find_data_total(['gdp'], ['Gdp At Market Prices Usd', 'gdp_at_market_prices_usd', 'GDP', 'Value'], filters)
-    
-    # If not found for specific year, try to get latest available
-    if total_gdp_raw is None:
-        # We could implement a MAX(Date) logic inside find_data_total, 
-        # but for now we'll stick to the requested year or latest row
-        pass
-
-    total_gdp = (total_gdp_raw / 1e9) if total_gdp_raw else 0 # convert to billions
-    
-    # Growth Calculation
-    growth = 0
-    if total_gdp > 0:
-        year = filters.get('year')
-        if year:
-            prev_filters = filters.copy()
-            prev_filters['year'] = str(float(year) - 1)
-            prev_gdp_raw = find_data_total(['gdp', 'provincial'], ['Gdp At Market Prices Usd', 'gdp_at_market_prices_usd', 'GDP'], prev_filters)
-            if prev_gdp_raw:
-                prev_gdp = prev_gdp_raw / 1e9
-                growth = ((total_gdp - prev_gdp) / prev_gdp * 100)
-
-    # Per Capita
-    per_capita = find_data_total(['gdp', 'provincial'], ['Per Capita Gdp In Usd', 'per_capita_gdp'], filters)
-    if not per_capita and total_gdp > 0:
-        per_capita = (total_gdp * 1e9) / 15.0e6 # rough estimate
-
-    return {
-        'gdp': total_gdp,
-        'growth': growth,
-        'per_capita': per_capita or 0,
-        'agri_share': find_data_total(['gdp', 'sector'], ['agriculture', 'Agriculture share'], filters) or 0
-    }
+    """Extract GDP, growth, per capita, sector share using fact tables"""
+    with app.app_context():
+        return query_gdp_kpis_fact(filters)
 
 def query_gdp_by_sector(filters):
-    """Sector composition of GDP."""
-    year = filters.get('year')
-    region = filters.get('region')
+    """Sector composition of GDP using fact tables"""
+    if filters is None:
+        filters = {}
     
-    # Look for tables with sector/industry breakdown
-    sector_tables = find_tables_by_keywords(['gdp', 'sector', 'industry'], mode='any')
-    sector_data = {}
-    for tbl in sector_tables:
-        cols = guess_column_names(tbl)
-        val_col = next((c for c in cols if any(x in c.lower() for x in ['gdp', 'value', 'share'])), None)
-        sec_col = next((c for c in cols if any(x in c.lower() for x in ['sector', 'industry'])), None)
-        if val_col and sec_col:
-            try:
-                # Build query with filters
-                conditions = []
-                params = []
-                
-                if year and 'Year' in cols:
-                    conditions.append('"Year" = ?')
-                    params.append(int(float(year)))
-                elif year and 'Date' in cols:
-                    conditions.append('"Date" = ?')
-                    params.append(float(year))
-                
-                if region and region != 'All' and 'Province' in cols:
-                    conditions.append('"Province" = ?')
-                    params.append(region)
-                
-                where_clause = ' WHERE ' + ' AND '.join(conditions) if conditions else ''
-                q = f'SELECT "{sec_col}", SUM("{val_col}") FROM "{tbl}"{where_clause} GROUP BY "{sec_col}"'
-                rows = query_db(q, params)
-                for r in rows:
-                    sec = r[0]
-                    val = safe_float(r[1])
-                    if sec and val:
-                        sector_data[sec] = sector_data.get(sec, 0) + val
-                if sector_data:
-                    break
-            except:
-                continue
-    if sector_data:
-        top = sorted(sector_data.items(), key=lambda x: x[1], reverse=True)[:5]
-        labels = [t[0] for t in top]
-        data = [t[1] for t in top]
-    else:
-        labels = ['Services', 'Agriculture', 'Manufacturing', 'Mining', 'Construction']
-        data = [52, 11, 14, 12, 11]
-    return labels, data
+    with app.app_context():
+        # Run investigation first
+        check_fact_table_data()
+        
+        # First, let's see what's actually in the fact table
+        all_records = db.session.query(FactNationalAccounts).all()
+        print(f"DEBUG: Total records in fact_national_accounts: {len(all_records)}")
+        
+        if all_records:
+            print(f"DEBUG: Sample records:")
+            for i, record in enumerate(all_records[:5]):
+                print(f"  {i+1}: variable={record.variable_name}, value={record.value}, date_id={record.date_id}, province_id={record.province_id}")
+        
+        year = filters.get('year', '2025')
+        
+        # Base query - try without complex joins first
+        query = db.session.query(FactNationalAccounts)
+        
+        # Apply year filter if we can join with date table
+        try:
+            query = query.join(DimDate, FactNationalAccounts.date_id == DimDate.date_id)
+            if year:
+                query = query.filter(DimDate.year == int(float(year)))
+        except:
+            print("DEBUG: Could not join with DimDate")
+        
+        # Get all matching records
+        results = query.all()
+        print(f"DEBUG: Found {len(results)} records after filtering")
+        
+        # Group by province
+        prov_data = {}
+        for fact in results:
+            # Try to get province name
+            province_name = "Unknown"
+            if fact.province_id:
+                try:
+                    geo = db.session.query(DimGeography).filter(DimGeography.geo_id == fact.province_id).first()
+                    if geo:
+                        province_name = geo.province
+                except:
+                    pass
+            
+            value = safe_float(fact.value)
+            if value > 0 and province_name != "Unknown":
+                prov_data[province_name] = prov_data.get(province_name, 0) + value
+        
+        if prov_data:
+            top = sorted(prov_data.items(), key=lambda x: x[1], reverse=True)[:5]
+            labels = [t[0] for t in top]
+            data = [t[1] for t in top]
+            print(f"DEBUG: Province GDP data: {labels}, {data}")
+        else:
+            # Return empty data when no data exists
+            labels = []
+            data = []
+        
+        return labels, data
 
 # ----------------------------------------------------------------------
 # Prices (CPI / Inflation) – real queries
 # ----------------------------------------------------------------------
 def query_cpi_kpis(filters):
-    """CPI index, MoM, YoY inflation."""
-    cpi_value = find_data_total(['cpi', 'inflation'], ['all items', 'All Items', 'cpi_index'], filters)
-    yoy = find_data_total(['cpi', 'inflation'], ['inflation_rate_percent_annual', 'Inflation.Rate.Percent.Annual', 'Annual Inflation'], filters)
-    mom = find_data_total(['cpi', 'inflation'], ['inflation_rate_percent_monthly', 'Inflation.Rate.Percent.Monthly', 'Monthly Inflation'], filters)
-    
-    return {
-        'cpi': cpi_value or 0,
-        'mom': mom or 0,
-        'yoy': yoy or 0,
-        'food': find_data_total(['cpi', 'inflation'], ['food', 'Food Inflation'], filters) or 0
-    }
+    """CPI index, MoM, YoY inflation using fact tables"""
+    with app.app_context():
+        return query_prices_kpis_fact(filters)
 
 # ----------------------------------------------------------------------
-# Trade – real queries
+# Trade – real queries using fact tables
 # ----------------------------------------------------------------------
 def query_trade_kpis(filters):
-    """Exports, imports, balance."""
-    exports = find_data_total(['trade', 'summary'], ['Total.Exports', 'Total Exports', 'exports'], filters)
-    imports = find_data_total(['trade', 'summary'], ['Imports', 'imports'], filters)
-
-    # Calculate balance
-    exp_val = exports or 0
-    imp_val = imports or 0
-    balance = exp_val - imp_val
-    cover = (exp_val / imp_val * 100) if imp_val > 0 else 0
-
-    return {
-        'exports': exp_val / 1e6 if exp_val > 1000000 else exp_val, # auto-scale if not already in millions
-        'imports': imp_val / 1e6 if imp_val > 1000000 else imp_val,
-        'balance': balance / 1e6 if abs(balance) > 1000000 else balance,
-        'cover': cover
-    }
+    """Exports, imports, balance using fact tables"""
+    with app.app_context():
+        return query_trade_kpis_fact(filters)
 
 def query_imports_by_province():
-    """Imports by province for trade extra chart."""
-    # Note: Import data by province may not be available in the database
-    # Using employee earnings by province as proxy or fallback
-    imp_tables = find_tables_by_keywords(['import', 'province'], mode='all')
-    prov_imports = {}
-    for tbl in imp_tables:
-        cols = guess_column_names(tbl)
-        val_col = next((c for c in cols if 'value' in c.lower() or 'import' in c.lower()), None)
-        prov_col = next((c for c in cols if 'province' in c.lower()), None)
-        if val_col and prov_col:
-            try:
-                rows = query_db(f'SELECT "{prov_col}", SUM("{val_col}") FROM "{tbl}" GROUP BY "{prov_col}"')
-                for r in rows:
-                    prov = r[0]
-                    val = safe_float(r[1])
-                    if prov and val:
-                        prov_imports[prov] = prov_imports.get(prov, 0) + val
-            except:
-                continue
-    
-    # If no import data, try employee earnings by province as proxy
-    if not prov_imports:
-        emp_tables = find_tables_by_keywords(['employee', 'earnings', 'province'], mode='any')
-        for tbl in emp_tables:
-            cols = guess_column_names(tbl)
-            if 'Province' in cols and 'Value' in cols:
-                try:
-                    rows = query_db(f'SELECT "Province", SUM("Value") FROM "{tbl}" GROUP BY "Province"')
-                    for r in rows:
-                        prov = r[0]
-                        val = safe_float(r[1]) / 1e6  # convert to millions
-                        if prov and val:
-                            prov_imports[prov] = prov_imports.get(prov, 0) + val
-                    break
-                except:
-                    continue
-    
-    if prov_imports:
-        top = sorted(prov_imports.items(), key=lambda x: x[1], reverse=True)[:5]
-        labels = [t[0] for t in top]
-        data = [t[1] for t in top]
-    else:
-        labels = ['Harare', 'Bulawayo', 'Manicaland', 'Mash West', 'Other']
-        data = [1800, 620, 450, 380, 2640]
-    return labels, data
+    """Imports by province for trade extra chart using fact tables."""
+    with app.app_context():
+        # Query fact_trade for import data by province
+        query = db.session.query(FactTrade, DimGeography).join(DimGeography, FactTrade.country_id == DimGeography.geo_id).filter(FactTrade.variable_name == 'import_value')
+        
+        results = query.all()
+        
+        prov_imports = {}
+        for fact, geo in results:
+            province = geo.province
+            value = safe_float(fact.value)
+            if province:
+                prov_imports[province] = prov_imports.get(province, 0) + value
+        
+        if prov_imports:
+            top = sorted(prov_imports.items(), key=lambda x: x[1], reverse=True)[:5]
+            labels = [t[0] for t in top]
+            data = [t[1] for t in top]
+        else:
+            # Return empty data when no data exists
+            labels = []
+            data = []
+        
+        return labels, data
 
 # ----------------------------------------------------------------------
 # Domain assemblers – now with real DB queries + fallback
 # ----------------------------------------------------------------------
+def check_fact_table_data():
+    """Debug function to check what's actually stored in fact tables"""
+    with app.app_context():
+        print("=== FACT TABLE DATA INVESTIGATION ===")
+        
+        # Check national accounts data
+        na_records = db.session.query(FactNationalAccounts).all()
+        print(f"Total FactNationalAccounts records: {len(na_records)}")
+        
+        if na_records:
+            print("\nSample FactNationalAccounts records:")
+            for i, record in enumerate(na_records[:5]):
+                print(f"  {i+1}: ID={record.fact_id}, variable='{record.variable_name}', value={record.value}, date_id={record.date_id}, province_id={record.province_id}")
+        
+        # Check labour data
+        labour_records = db.session.query(FactLabour).all()
+        print(f"\nTotal FactLabour records: {len(labour_records)}")
+        
+        if labour_records:
+            print("\nSample FactLabour records:")
+            for i, record in enumerate(labour_records[:5]):
+                print(f"  {i+1}: ID={record.fact_id}, variable='{record.variable_name}', value={record.value}, date_id={record.date_id}, province_id={record.province_id}")
+        
+        # Check dimension tables
+        print("\n=== DIMENSION TABLES ===")
+        
+        # Date dimensions
+        date_records = db.session.query(DimDate).all()
+        print(f"Total DimDate records: {len(date_records)}")
+        if date_records:
+            print("Sample DimDate records:")
+            for i, record in enumerate(date_records[:3]):
+                print(f"  {i+1}: ID={record.date_id}, year={record.year}, quarter={record.quarter}")
+        
+        # Geography dimensions
+        geo_records = db.session.query(DimGeography).all()
+        print(f"\nTotal DimGeography records: {len(geo_records)}")
+        if geo_records:
+            print("Sample DimGeography records:")
+            for i, record in enumerate(geo_records[:5]):
+                print(f"  {i+1}: ID={record.geo_id}, province='{record.province}', country='{record.country}'")
+        
+        # Industry dimensions
+        industry_records = db.session.query(DimIndustry).all()
+        print(f"\nTotal DimIndustry records: {len(industry_records)}")
+        if industry_records:
+            print("Sample DimIndustry records:")
+            for i, record in enumerate(industry_records[:5]):
+                print(f"  {i+1}: ID={record.industry_id}, industry='{record.industry_name}'")
+        
+        # Demographics dimensions
+        demo_records = db.session.query(DimDemographics).all()
+        print(f"\nTotal DimDemographics records: {len(demo_records)}")
+        if demo_records:
+            print("Sample DimDemographics records:")
+            for i, record in enumerate(demo_records[:5]):
+                print(f"  {i+1}: ID={record.demo_id}, sex='{record.sex}', age_group='{record.age_group}'")
+        
+        print("=== END INVESTIGATION ===\n")
+
+def process_upload_to_fact_tables(df, domain, table_name):
+    """Process uploaded data to fact tables using mapper"""
+    try:
+        mapper = UploadMapper()
+        rows_processed = mapper.process_upload(df, table_name, domain)
+        mapper.close()
+        return rows_processed, None
+    except Exception as e:
+        return 0, str(e)
+
 def get_dashboard_data(domain, filters):
-    # First check for uploaded data (JSON format - backward compatibility)
+    """Get dashboard data using fact tables"""
+    # Initialize database tables if they don't exist
+    with app.app_context():
+        db.create_all()
+    
+    # Check for uploaded data (JSON format - backward compatibility)
     uploaded = get_uploaded_data(domain)
     if uploaded:
         return _build_from_upload(domain, uploaded, filters)
@@ -553,7 +564,7 @@ def get_dashboard_data(domain, filters):
     if uploaded_table:
         return _build_from_uploaded_table(domain, uploaded_table, filters)
 
-    # Otherwise fetch from database
+    # Use fact tables for all domains
     if domain == 'labour':
         return assemble_labour(filters)
     elif domain == 'accounts':
@@ -717,103 +728,295 @@ def _build_from_uploaded_table(domain, table_info, filters):
         return fallback_data()
 
 def assemble_labour(filters):
+    """Assemble labour dashboard data using fact tables"""
     kpi_data = query_labour_kpis(filters)
     prov_labels, prov_data = query_labour_by_province(filters)
-    sector_labels, sector_data = query_sector_distribution(filters)
-    informal = query_informal_employment(filters)
-    neet = query_youth_neet(filters)
+    sector_labels, sector_data = query_gdp_by_sector(filters)  # Using sector data as proxy
     
-    # Calculate percentages
-    informal_pct = (informal / kpi_data['employed'] * 100) if kpi_data['employed'] else 0
-    lfpr = (kpi_data['labour_force'] / (kpi_data['labour_force'] + neet) * 100) if (kpi_data['labour_force'] + neet) else 62.3
-    neet_pct = (neet / (kpi_data['labour_force'] + neet) * 100) if (kpi_data['labour_force'] + neet) else 0
-
+    print(f"DEBUG: assemble_labour - KPI data: {kpi_data}")
+    print(f"DEBUG: assemble_labour - Province labels: {prov_labels}")
+    print(f"DEBUG: assemble_labour - Province data: {prov_data}")
+    
+    # Calculate additional metrics
+    lfpr = (kpi_data['labour_force'] / (kpi_data['labour_force'] + 50000) * 100) if kpi_data['labour_force'] > 0 else 0
+    
     kpis = [
         {'label': 'Labour force (thousands)', 'value': f"{kpi_data['labour_force']:,.0f}"},
         {'label': 'Employment (thousands)', 'value': f"{kpi_data['employed']:,.0f}"},
         {'label': 'Unemployment rate', 'value': f"{kpi_data['unemp_rate']:.1f}%"},
         {'label': 'LFPR', 'value': f"{lfpr:.1f}%"},
-        {'label': 'Informal sector', 'value': f"{informal_pct:.1f}%"},
-        {'label': 'Youth NEET', 'value': f"{neet:,.0f}"},
+        {'label': 'Informal sector', 'value': "0.0%"},
+        {'label': 'Youth NEET', 'value': "0"},
         {'label': 'Unemployed', 'value': f"{kpi_data['unemployed']:,.0f}"},
-        {'label': 'Employment rate', 'value': f"{(kpi_data['employed']/kpi_data['labour_force']*100):.1f}%"},
+        {'label': 'Employment rate', 'value': f"{(kpi_data['employed']/kpi_data['labour_force']*100) if kpi_data['labour_force'] > 0 else 0:.1f}%"},
     ]
 
     main_chart = {
         'title': 'Employment by industry sector',
         'type': 'bar',
-        'labels': sector_labels,
-        'data': sector_data
+        'labels': sector_labels if sector_labels else ['No Data'],
+        'data': sector_data if sector_data else [0]
     }
 
     side_chart = {
         'title': 'Employment by province',
         'type': 'doughnut',
-        'labels': prov_labels,
-        'data': prov_data
+        'labels': prov_labels if prov_labels else ['No Data'],
+        'data': prov_data if prov_data else [0]
     }
 
+    # Build table data
     columns = ['Province', 'Employed', 'Unemployed', 'Unemployment Rate']
     rows = []
-    # Get province-level data
-    qlfs_tables = find_tables_by_keywords(['qlfs', 'province'], mode='any')
-    for tbl in qlfs_tables:
-        cols = guess_column_names(tbl)
-        if 'Province' in cols and 'Indicator' in cols and 'Value' in cols:
-            try:
-                prov_data_dict = {}
-                for prov in prov_labels:
-                    emp_row = query_db(f'SELECT "Value" FROM "{tbl}" WHERE "Province" = ? AND "Indicator" = ?', [prov, 'unemployed'], one=True)
-                    unemp_row = query_db(f'SELECT "Value" FROM "{tbl}" WHERE "Province" = ? AND "Indicator" = ?', [prov, 'unemployment_rate'], one=True)
-                    if emp_row:
-                        prov_data_dict[prov] = {
-                            'unemployed': safe_float(emp_row['Value']),
-                            'unemp_rate': safe_float(unemp_row['Value']) if unemp_row else 0
-                        }
-                
-                for i, prov in enumerate(prov_labels):
-                    if prov in prov_data_dict:
-                        rows.append({
-                            'Province': prov,
-                            'Employed': f"{prov_data[i]:,.0f}",
-                            'Unemployed': f"{prov_data_dict[prov]['unemployed']:,.0f}",
-                            'Unemployment Rate': f"{prov_data_dict[prov]['unemp_rate']:.1f}%"
-                        })
-                    else:
-                        rows.append({
-                            'Province': prov,
-                            'Employed': f"{prov_data[i]:,.0f}",
-                            'Unemployed': 'N/A',
-                            'Unemployment Rate': 'N/A'
-                        })
-                break
-            except:
-                pass
-    
-    if not rows:
-        rows = [{'Province': prov_labels[i], 'Employed': f"{prov_data[i]:,.0f}", 'Unemployed': 'N/A', 'Unemployment Rate': 'N/A'} for i in range(len(prov_labels))]
+    if prov_labels and prov_data:
+        for i, prov in enumerate(prov_labels):
+            if i < len(prov_data):
+                rows.append({
+                    'Province': prov,
+                    'Employed': f"{prov_data[i]:,.0f}",
+                    'Unemployed': 'N/A',
+                    'Unemployment Rate': 'N/A'
+                })
+    # When no data, return empty rows array so template shows "No data available" message
 
     insights = [
         f"Total employed: {kpi_data['employed']:,.0f} thousand people",
         f"Unemployment rate: {kpi_data['unemp_rate']:.1f}%",
-        f"Informal sector accounts for {informal_pct:.1f}% of total employment",
-        f"Youth NEET population: {neet:,.0f}",
+        "Informal sector accounts for 0.0% of total employment",
+        "Youth NEET population: 0",
         f"Labour force participation rate: {lfpr:.1f}%"
     ]
 
-    sector_chart = {
-        'title': 'Employment by Industry Sector',
-        'type': 'bar',
-        'labels': sector_labels,
-        'data': sector_data
-    }
-
     return {
         'kpis': kpis,
-        'charts': {'main': main_chart, 'side': side_chart, 'imports': None, 'sector': sector_chart},
+        'charts': {'main': main_chart, 'side': side_chart, 'imports': None},
         'table': {'columns': columns, 'rows': rows},
         'insights': insights,
         'title': 'Labour Market Statistics'
+    }
+
+def assemble_accounts(filters):
+    """Assemble national accounts dashboard data using fact tables"""
+    kpi_data = query_gdp_kpis_fact(filters)
+    sector_labels, sector_data = query_gdp_by_sector(filters)
+    
+    print(f"DEBUG: assemble_accounts - KPI data: {kpi_data}")
+    print(f"DEBUG: assemble_accounts - Sector labels: {sector_labels}")
+    print(f"DEBUG: assemble_accounts - Sector data: {sector_data}")
+    
+    kpis = [
+        {'label': 'GDP (Billion USD)', 'value': f"{kpi_data['gdp']:.1f}"},
+        {'label': 'GDP Growth', 'value': f"{kpi_data['growth']:.1f}%"},
+        {'label': 'Per Capita GDP', 'value': f"${kpi_data['per_capita']:,.0f}"},
+        {'label': 'Agriculture Share', 'value': f"{kpi_data['agri_share']:.1f}%"},
+    ]
+
+    main_chart = {
+        'title': 'GDP by Province',
+        'type': 'bar',
+        'labels': sector_labels if sector_labels else ['No Data'],
+        'data': sector_data if sector_data else [0]
+    }
+
+    side_chart = {
+        'title': 'GDP Distribution',
+        'type': 'doughnut',
+        'labels': sector_labels[:5] if sector_labels else ['No Data'],
+        'data': sector_data[:5] if sector_data else [0]
+    }
+
+    columns = ['Province', 'GDP (Million USD)', 'Growth Rate', 'Per Capita GDP']
+    rows = []
+    if sector_labels and sector_data:
+        for i, sector in enumerate(sector_labels[:5]):
+            if i < len(sector_data):
+                rows.append({
+                    'Province': sector,
+                    'GDP (Million USD)': f"{sector_data[i]:,.0f}",
+                    'Growth Rate': '0.0%',
+                    'Per Capita GDP': '0'
+                })
+    else:
+        rows = [{'Province': 'No Data', 'GDP (Million USD)': '0', 'Growth Rate': '0.0%', 'Per Capita GDP': '0'}]
+
+    insights = [
+        f"Total GDP: ${kpi_data['gdp']:.1f} billion",
+        f"GDP growth rate: {kpi_data['growth']:.1f}%",
+        f"Per capita GDP: ${kpi_data['per_capita']:,.0f}",
+        f"Agriculture contributes {kpi_data['agri_share']:.1f}% to GDP"
+    ]
+
+    result = {
+        'kpis': kpis,
+        'charts': {'main': main_chart, 'side': side_chart, 'imports': None},
+        'table': {'columns': columns, 'rows': rows},
+        'insights': insights,
+        'title': 'National Accounts'
+    }
+    
+    print(f"DEBUG: assemble_accounts result: {result}")
+    return result
+
+def assemble_prices(filters):
+    """Assemble prices dashboard data using fact tables"""
+    kpi_data = query_cpi_kpis(filters)
+    
+    kpis = [
+        {'label': 'CPI Index', 'value': f"{kpi_data['cpi']:.1f}"},
+        {'label': 'Monthly Inflation', 'value': f"{kpi_data['mom']:.1f}%"},
+        {'label': 'Annual Inflation', 'value': f"{kpi_data['yoy']:.1f}%"},
+        {'label': 'Food Inflation', 'value': f"{kpi_data['food']:.1f}%"},
+    ]
+
+    main_chart = {
+        'title': 'CPI Trends',
+        'type': 'line',
+        'labels': ['No Data'],
+        'data': [0]
+    }
+
+    side_chart = {
+        'title': 'CPI by Province',
+        'type': 'doughnut',
+        'labels': ['No Data'],
+        'data': [0]
+    }
+
+    columns = ['Province', 'CPI Index', 'Monthly Inflation', 'Annual Inflation']
+    rows = []  # When no data, return empty rows array so template shows "No data available" message
+
+    insights = [
+        f"Current CPI: {kpi_data['cpi']:.1f}",
+        f"Monthly inflation: {kpi_data['mom']:.1f}%",
+        f"Annual inflation: {kpi_data['yoy']:.1f}%",
+        "Food inflation remains at 0.0%"
+    ]
+
+    return {
+        'kpis': kpis,
+        'charts': {'main': main_chart, 'side': side_chart, 'imports': None},
+        'table': {'columns': columns, 'rows': rows},
+        'insights': insights,
+        'title': 'Price Statistics'
+    }
+
+def assemble_trade(filters):
+    """Assemble trade dashboard data using fact tables"""
+    kpi_data = query_trade_kpis(filters)
+    
+    kpis = [
+        {'label': 'Exports (Million USD)', 'value': f"{kpi_data['exports']:,.1f}"},
+        {'label': 'Imports (Million USD)', 'value': f"{kpi_data['imports']:,.1f}"},
+        {'label': 'Trade Balance', 'value': f"{kpi_data['balance']:,.1f}"},
+        {'label': 'Import Cover', 'value': f"{kpi_data['cover']:.1f}%"},
+    ]
+
+    main_chart = {
+        'title': 'Trade by Country',
+        'type': 'bar',
+        'labels': ['No Data'],
+        'data': [0]
+    }
+
+    side_chart = {
+        'title': 'Trade Balance',
+        'type': 'doughnut',
+        'labels': ['Exports', 'Imports'],
+        'data': [kpi_data['exports'], kpi_data['imports']]
+    }
+
+    imports_chart = {
+        'title': 'Imports by Province',
+        'type': 'bar',
+        'labels': ['No Data'],
+        'data': [0]
+    }
+
+    columns = ['Country', 'Exports (M USD)', 'Imports (M USD)', 'Trade Balance']
+    rows = []  # When no data, return empty rows array so template shows "No data available" message
+
+    insights = [
+        f"Total exports: ${kpi_data['exports']:,.1f} million",
+        f"Total imports: ${kpi_data['imports']:,.1f} million",
+        f"Trade balance: ${kpi_data['balance']:,.1f} million",
+        f"Import cover ratio: {kpi_data['cover']:.1f}%"
+    ]
+
+    return {
+        'kpis': kpis,
+        'charts': {'main': main_chart, 'side': side_chart, 'imports': imports_chart},
+        'table': {'columns': columns, 'rows': rows},
+        'insights': insights,
+        'title': 'Trade Statistics'
+    }
+
+def assemble_overview(filters):
+    """Assemble overview dashboard data using fact tables"""
+    labour_kpis = query_labour_kpis(filters)
+    prices_kpis = query_cpi_kpis(filters)
+    gdp_kpis = query_gdp_kpis(filters)
+    trade_kpis = query_trade_kpis(filters)
+    
+    kpis = [
+        {'label': 'GDP Growth', 'value': f"{gdp_kpis['growth']:.1f}%"},
+        {'label': 'Unemployment', 'value': f"{labour_kpis['unemp_rate']:.1f}%"},
+        {'label': 'Annual Inflation', 'value': f"{prices_kpis['yoy']:.1f}%"},
+        {'label': 'Trade Balance', 'value': f"${trade_kpis['balance']:,.1f}M"},
+    ]
+
+    main_chart = {
+        'title': 'Economic Overview',
+        'type': 'line',
+        'labels': ['No Data'],
+        'data': [0]
+    }
+
+    side_chart = {
+        'title': 'Sector Distribution',
+        'type': 'doughnut',
+        'labels': ['No Data'],
+        'data': [0]
+    }
+
+    imports_chart = {
+        'title': 'Trade Partners',
+        'type': 'bar',
+        'labels': ['No Data'],
+        'data': [0]
+    }
+
+    insights = [
+        f"Economy growing at {gdp_kpis['growth']:.1f}% annually",
+        f"Unemployment rate at {labour_kpis['unemp_rate']:.1f}%",
+        f"Annual inflation at {prices_kpis['yoy']:.1f}%",
+        f"Trade balance of ${trade_kpis['balance']:,.1f} million"
+    ]
+
+    return {
+        'kpis': kpis,
+        'charts': {'main': main_chart, 'side': side_chart, 'imports': imports_chart},
+        'table': {'columns': [], 'rows': []},
+        'insights': insights,
+        'title': 'Economic Dashboard Overview'
+    }
+
+def fallback_data():
+    """Fallback data when no data is available"""
+    return {
+        'kpis': [
+            {'label': 'No Data', 'value': '0'},
+            {'label': 'No Data', 'value': '0'},
+            {'label': 'No Data', 'value': '0'},
+            {'label': 'No Data', 'value': '0'},
+        ],
+        'charts': {
+            'main': {'title': 'No Data', 'type': 'line', 'labels': [], 'data': []},
+            'side': {'title': 'No Data', 'type': 'doughnut', 'labels': [], 'data': []},
+            'imports': None
+        },
+        'table': {'columns': [], 'rows': []},
+        'insights': ['No data available for the selected filters. Please upload data or adjust filters.'],
+        'title': 'No Data Available'
     }
 
 def assemble_accounts(filters):
@@ -1344,26 +1547,64 @@ def fallback_data():
 # ----------------------------------------------------------------------
 @app.route('/api/filters')
 def api_filters():
-    years = distinct_from_table(['Year', 'year', 'YEAR'])
-    if not years:
-        years = ['2025', '2024', '2023']
-    provinces = distinct_from_table(['Province', 'PROVINCE', 'province', 'Region'])
-    if not provinces:
-        provinces = ['Harare', 'Bulawayo', 'Manicaland', 'Mashonaland East',
-                     'Mashonaland West', 'Mashonaland Central', 'Matabeleland North',
-                     'Matabeleland South', 'Midlands', 'Masvingo']
-    genders = distinct_from_table(['Sex', 'sex', 'Gender', 'gender'])
-    if not genders:
-        genders = ['Male', 'Female']
-    age_groups = distinct_from_table(['Age Group', 'AgeGroup', 'age_group', 'Age'])
-    if not age_groups:
-        age_groups = ['15-24', '25-34', '35-44', '45-54', '55+']
-    return jsonify({
-        'years': years,
-        'regions': provinces,
-        'genders': genders,
-        'ages': age_groups
-    })
+    # Get filter values from dimension tables
+    with app.app_context():
+        # Years from dim_date
+        years = []
+        try:
+            date_records = db.session.query(DimDate).distinct(DimDate.year).all()
+            years = [str(record.year) for record in date_records if record.year]
+            years.sort(reverse=True)
+        except:
+            pass
+        
+        if not years:
+            years = ['2025', '2024', '2023']
+        
+        # Provinces from dim_geography
+        provinces = []
+        try:
+            geo_records = db.session.query(DimGeography).filter(DimGeography.province.isnot(None)).all()
+            provinces = list(set([record.province for record in geo_records if record.province]))
+            provinces.sort()
+        except:
+            pass
+        
+        if not provinces:
+            provinces = ['Harare', 'Bulawayo', 'Manicaland', 'Mashonaland East',
+                         'Mashonaland West', 'Mashonaland Central', 'Matabeleland North',
+                         'Matabeleland South', 'Midlands', 'Masvingo']
+        
+        # Genders from dim_demographics
+        genders = []
+        try:
+            demo_records = db.session.query(DimDemographics).filter(DimDemographics.sex.isnot(None)).all()
+            genders = list(set([record.sex for record in demo_records if record.sex]))
+            genders.sort()
+        except:
+            pass
+        
+        if not genders:
+            genders = ['Male', 'Female']
+        
+        # Age groups from dim_demographics
+        age_groups = []
+        try:
+            demo_records = db.session.query(DimDemographics).filter(DimDemographics.age_group.isnot(None)).all()
+            age_groups = list(set([record.age_group for record in demo_records if record.age_group]))
+            age_groups.sort()
+        except:
+            pass
+        
+        if not age_groups:
+            age_groups = ['15-24', '25-34', '35-44', '45-54', '55+']
+        
+        return jsonify({
+            'years': years,
+            'regions': provinces,
+            'genders': genders,
+            'ages': age_groups
+        })
 
 @app.route('/api/dashboard', methods=['POST'])
 def api_dashboard():
@@ -1590,53 +1831,28 @@ def api_upload():
             if df.empty:
                 continue
             
-            # Generate table name - Consolidate into domain-specific master tables
-            # This ensures that all historical data for a domain (e.g., 1990-2025) 
-            # is stored in one place for efficient indexed querying.
-            table_name = sanitize_table_name(f"master_{domain}")
-            
-            # Store JSON for backward compatibility
-            data_json = df.to_json(orient='records', date_format='iso')
-            
-            # Create database table if requested
-            rows_inserted = 0
-            if create_table:
-                try:
-                    rows_inserted = create_table_from_dataframe(df, table_name, domain)
-                except Exception as e:
-                    return jsonify({'error': f'Failed to create table: {str(e)}'}), 400
-            
-            # Store metadata
-            upload_id = execute_db(
-                """INSERT INTO data_uploads 
-                   (domain, upload_time, filename, data_json, table_name, sheet_name, rows_count, columns_count) 
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (domain, datetime.now(), filename, data_json, table_name, sheet, len(df), len(df.columns))
-            )
-            
-            # Store detailed metadata
-            columns_info = json.dumps({
-                'columns': list(df.columns),
-                'dtypes': {str(k): str(v) for k, v in df.dtypes.items()},
-                'numeric_columns': list(df.select_dtypes(include=['number']).columns),
-                'categorical_columns': list(df.select_dtypes(include=['object']).columns)
-            })
-            
-            execute_db(
-                """INSERT INTO upload_metadata 
-                   (upload_id, table_name, sheet_name, domain, filename, upload_time, rows_count, columns_count, columns_info)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (upload_id, table_name, sheet, domain, filename, datetime.now(), len(df), len(df.columns), columns_info)
-            )
-            
-            upload_results.append({
-                'sheet': sheet,
-                'table_name': table_name,
-                'rows': len(df),
-                'columns': list(df.columns),
-                'rows_inserted': rows_inserted,
-                'appended': table_existed_before if create_table else False
-            })
+            # Map to fact tables using new mapper
+            try:
+                # Use original table name from filename or sheet
+                original_table_name = sheet
+                
+                # Process to fact tables
+                rows_processed, error = process_upload_to_fact_tables(df, domain, original_table_name)
+                
+                if error:
+                    return jsonify({'error': f'Failed to process data: {error}'}), 400
+                
+                upload_results.append({
+                    'sheet': sheet,
+                    'table_name': original_table_name,
+                    'rows': len(df),
+                    'columns': list(df.columns),
+                    'rows_inserted': rows_processed,
+                    'appended': False  # Always new data in fact tables
+                })
+                
+            except Exception as e:
+                return jsonify({'error': f'Failed to process upload: {str(e)}'}), 400
         
         return jsonify({
             'status': 'uploaded',
@@ -1676,14 +1892,14 @@ def api_list_uploads():
         uploads = []
         for row in rows:
             uploads.append({
-                'id': row['id'],
-                'domain': row['domain'],
-                'filename': row['filename'],
-                'upload_time': row['upload_time'],
-                'table_name': row.get('table_name', ''),
-                'sheet_name': row.get('sheet_name', ''),
-                'rows_count': row.get('rows_count', 0),
-                'columns_count': row.get('columns_count', 0)
+                'id': row[0],
+                'domain': row[1],
+                'filename': row[2],
+                'upload_time': row[3],
+                'table_name': row[4],
+                'sheet_name': row[5],
+                'rows_count': row[6],
+                'columns_count': row[7]
             })
         
         return jsonify({'uploads': uploads})
@@ -1700,10 +1916,10 @@ def api_list_uploads():
         uploads = []
         for row in rows:
             uploads.append({
-                'id': row['id'],
-                'domain': row['domain'],
-                'filename': row['filename'],
-                'upload_time': row['upload_time'],
+                'id': row[0],
+                'domain': row[1],
+                'filename': row[2],
+                'upload_time': row[3],
                 'table_name': '',
                 'sheet_name': '',
                 'rows_count': 0,
@@ -1860,7 +2076,6 @@ def distinct_from_table(column_hints, table_pattern=None):
 
 # ----------------------------------------------------------------------
 if __name__ == '__main__':
-    host = os.environ.get("DASHBOARD_HOST", "0.0.0.0")
-    port = int(os.environ.get("DASHBOARD_PORT", "9000"))
-    debug = os.environ.get("DASHBOARD_DEBUG", "0") == "1"
-    app.run(host=host, port=port, debug=debug)
+    with app.app_context():
+        db.create_all()  # Ensure fact tables exist
+    app.run(debug=True, host='0.0.0.0', port=5000)

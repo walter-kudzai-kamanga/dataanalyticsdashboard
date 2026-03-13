@@ -642,6 +642,11 @@
       });
 
       const payload = await res.json();
+      
+      // Debug logging
+      console.log('DEBUG: Dashboard payload:', payload);
+      console.log('DEBUG: KPIs:', payload.kpis);
+      console.log('DEBUG: Charts:', payload.charts);
 
       renderKPIs(payload.kpis);
       renderCharts(payload.charts);
@@ -652,21 +657,27 @@
     }
 
     function renderKPIs(kpis) {
+      console.log('DEBUG: renderKPIs called with:', kpis);
+      
       for (let i = 1; i <= 8; i++) {
         const card = document.getElementById('kpiLabel' + (i)).parentElement.parentElement;
         card.style.display = 'none';
       }
       kpis.forEach((k, i) => {
+        console.log(`DEBUG: Processing KPI ${i}:`, k);
         if (i < 8) {
           const card = document.getElementById('kpiLabel' + (i + 1)).parentElement.parentElement;
           card.style.display = 'block';
           document.getElementById('kpiLabel' + (i + 1)).textContent = k.label;
           document.getElementById('kpi' + (i + 1)).textContent = k.value;
+          console.log(`DEBUG: Set KPI ${i + 1}: ${k.label} = ${k.value}`);
         }
       });
     }
 
     function renderCharts(ch) {
+      console.log('DEBUG: renderCharts called with:', ch);
+      
       mainChartTitle.textContent = ch.main.title;
       sideChartTitle.textContent = ch.side.title;
 
@@ -679,12 +690,14 @@
       if (comparisonChart) { comparisonChart.destroy(); comparisonChart = null; }
       if (sectorChart) { sectorChart.destroy(); sectorChart = null; }
 
+      console.log('DEBUG: Creating main chart with:', ch.main.labels, ch.main.data);
       trendChart = new Chart(trendChartEl, {
         type: ch.main.type,
         data: { labels: ch.main.labels, datasets: [{ data: ch.main.data, backgroundColor: '#0A08ED', borderColor: '#D1BC6A', borderWidth: 2 }] },
         options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
       });
 
+      console.log('DEBUG: Creating side chart with:', ch.side.labels, ch.side.data);
       donutChart = new Chart(donutChartEl, {
         type: ch.side.type,
         data: { labels: ch.side.labels, datasets: [{ data: ch.side.data, backgroundColor: ['#0A08ED', '#D1BC6A', '#D00000', '#90583F', '#111111', '#64748b', '#94a3b8'] }] }

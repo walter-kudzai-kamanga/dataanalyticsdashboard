@@ -74,9 +74,9 @@ def start_app():
         # Run the app
         subprocess.run([python_exe, app_path], env=os.environ.copy())
     except KeyboardInterrupt:
-        print("\n\n👋 Application stopped by user.")
+        print("\n\n Application stopped by user.")
     except Exception as e:
-        print(f"\n❌ Error starting application: {e}")
+        print(f"\n Error starting application: {e}")
 
 if __name__ == "__main__":
     start_app()
