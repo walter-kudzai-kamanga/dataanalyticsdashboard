@@ -543,7 +543,6 @@ def process_upload_to_fact_tables(df, domain, table_name):
     try:
         mapper = UploadMapper()
         rows_processed = mapper.process_upload(df, table_name, domain)
-        mapper.close()
         return rows_processed, None
     except Exception as e:
         return 0, str(e)

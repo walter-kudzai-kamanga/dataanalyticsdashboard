@@ -350,46 +350,58 @@ class UploadMapper:
         return 0.0
     
     def save_to_fact_table(self, data, table_name):
-        """Save mapped data to appropriate fact table"""
-        if not data:
-            return 0
-            
-        cursor = self.conn.cursor()
+        """Save mapped data to fact table using SQLAlchemy"""
+        print(f"DEBUG: Saving {len(data)} rows to {table_name}")
         
         if table_name == 'fact_labour':
             for row in data:
-                cursor.execute('''
-                    INSERT INTO fact_labour (date_id, industry_id, occupation_id, sex_id, age_group_id, province_id, variable_name, value)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (row.get('date_id'), row.get('industry_id'), row.get('occupation_id'),
-                      row.get('sex_id'), row.get('age_group_id'), row.get('province_id'),
-                      row.get('variable_name'), row.get('value')))
+                fact = FactLabour(
+                    date_id=row.get('date_id'),
+                    industry_id=row.get('industry_id'),
+                    occupation_id=row.get('occupation_id'),
+                    sex_id=row.get('sex_id'),
+                    age_group_id=row.get('age_group_id'),
+                    province_id=row.get('province_id'),
+                    variable_name=row.get('variable_name'),
+                    value=row.get('value')
+                )
+                db.session.add(fact)
         
         elif table_name == 'fact_prices':
             for row in data:
-                cursor.execute('''
-                    INSERT INTO fact_prices (date_id, province_id, currency_id, variable_name, value)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (row.get('date_id'), row.get('province_id'), row.get('currency_id'),
-                      row.get('variable_name'), row.get('value')))
+                fact = FactPrices(
+                    date_id=row.get('date_id'),
+                    province_id=row.get('province_id'),
+                    currency_id=row.get('currency_id'),
+                    variable_name=row.get('variable_name'),
+                    value=row.get('value')
+                )
+                db.session.add(fact)
         
         elif table_name == 'fact_national_accounts':
             for row in data:
-                cursor.execute('''
-                    INSERT INTO fact_national_accounts (date_id, province_id, industry_id, variable_name, value)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (row.get('date_id'), row.get('province_id'), row.get('industry_id'),
-                      row.get('variable_name'), row.get('value')))
+                fact = FactNationalAccounts(
+                    date_id=row.get('date_id'),
+                    province_id=row.get('province_id'),
+                    industry_id=row.get('industry_id'),
+                    variable_name=row.get('variable_name'),
+                    value=row.get('value')
+                )
+                db.session.add(fact)
         
         elif table_name == 'fact_trade':
             for row in data:
-                cursor.execute('''
-                    INSERT INTO fact_trade (date_id, country_id, trade_group_id, variable_name, value)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (row.get('date_id'), row.get('country_id'), row.get('trade_group_id'),
-                      row.get('variable_name'), row.get('value')))
+                fact = FactTrade(
+                    date_id=row.get('date_id'),
+                    country_id=row.get('country_id'),
+                    trade_group_id=row.get('trade_group_id'),
+                    variable_name=row.get('variable_name'),
+                    value=row.get('value')
+                )
+                db.session.add(fact)
         
-        self.conn.commit()
+        db.session.commit()
+        print(f"DEBUG: Successfully saved {len(data)} rows to {table_name}")
         return len(data)
     
     def process_upload(self, df, table_name, domain):
@@ -421,8 +433,3 @@ class UploadMapper:
         
         print(f"DEBUG: Mapped {len(mapped_data)} rows, Result: {result}")
         return result
-    
-    def close(self):
-        """Close database connection"""
-        if self.conn:
-            self.conn.close()
