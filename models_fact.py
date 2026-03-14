@@ -424,7 +424,8 @@ def query_trade_kpis_fact(filters=None):
     result = {
         'exports': exports_total,
         'imports': imports_total,
-        'trade_balance': trade_balance
+        'balance': trade_balance,  # Changed from 'trade_balance' to 'balance'
+        'cover': (exports_total / imports_total * 100) if imports_total > 0 else 0  # Calculate cover ratio
     }
     
     print(f"Trade KPI result: {result}")
