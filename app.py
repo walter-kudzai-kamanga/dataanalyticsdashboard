@@ -17,6 +17,15 @@ from upload_mapper import UploadMapper
 
 # Fix pandas warnings
 pd.set_option('future.no_silent_downcasting', True)
+
+def safe_float(value):
+    """Convert value to float safely"""
+    try:
+        if value is None:
+            return 0.0
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.INFO if os.environ.get("DASHBOARD_ACCESS_LOGS", "0") == "1" else logging.ERROR)
 
@@ -375,9 +384,6 @@ def query_gdp_by_sector(filters):
         filters = {}
     
     with app.app_context():
-        # Run investigation first
-        check_fact_table_data()
-        
         # First, let's see what's actually in the fact table
         all_records = db.session.query(FactNationalAccounts).all()
         print(f"DEBUG: Total records in fact_national_accounts: {len(all_records)}")
@@ -404,28 +410,40 @@ def query_gdp_by_sector(filters):
         results = query.all()
         print(f"DEBUG: Found {len(results)} records after filtering")
         
-        # Group by province
-        prov_data = {}
+        # Group by industry/sector
+        sector_data = {}
         for fact in results:
-            # Try to get province name
-            province_name = "Unknown"
-            if fact.province_id:
-                try:
-                    geo = db.session.query(DimGeography).filter(DimGeography.geo_id == fact.province_id).first()
-                    if geo:
-                        province_name = geo.province
-                except:
-                    pass
-            
-            value = safe_float(fact.value)
-            if value > 0 and province_name != "Unknown":
-                prov_data[province_name] = prov_data.get(province_name, 0) + value
+            # If variable_name is an industry, use it directly
+            if fact.variable_name and fact.variable_name in [
+                'mining_and_quarrying', 'manufacturing', 'electricity_gas_steam_and_air_conditioning_supply',
+                'water_supply_sewerage_waste_management_remediation_activities', 'construction',
+                'wholesale_and_retail_trade_repair_of_motor_vehicles_and_motorcycles',
+                'transportation_and_storage', 'accommodation_and_food_service_activities',
+                'information_and_communication', 'financial_and_insurance_activities',
+                'real_estate_activities', 'professional_scientific_and_technical_activities',
+                'administrative_and_support_service_activities', 'public_administration_and_defence_compulsary_social_security',
+                'education', 'human_health_and_social_work_activities',
+                'arts_entertainment_and_recreation', 'other_services',
+                'agriculture_forestry_and_fishing'
+            ]:
+                # Convert variable name to readable format
+                sector_name = fact.variable_name.replace('_', ' ').title()
+                value = safe_float(fact.value)
+                if value > 0:
+                    sector_data[sector_name] = sector_data.get(sector_name, 0) + value
+            else:
+                # Fallback to province if it's a province name
+                if fact.variable_name and fact.variable_name in ['manicaland', 'harare', 'bulawayo', 'mashonaland_central', 'mashonaland_east', 'mashonaland_west', 'matabeleland_north', 'matabeleland_south', 'midlands', 'masvingo']:
+                    province_name = fact.variable_name.title()
+                    value = safe_float(fact.value)
+                    if value > 0:
+                        sector_data[province_name] = sector_data.get(province_name, 0) + value
         
-        if prov_data:
-            top = sorted(prov_data.items(), key=lambda x: x[1], reverse=True)[:5]
+        if sector_data:
+            top = sorted(sector_data.items(), key=lambda x: x[1], reverse=True)[:5]
             labels = [t[0] for t in top]
             data = [t[1] for t in top]
-            print(f"DEBUG: Province GDP data: {labels}, {data}")
+            print(f"DEBUG: Sector data: {labels}, {data}")
         else:
             # Return empty data when no data exists
             labels = []
@@ -490,7 +508,7 @@ def check_fact_table_data():
         if na_records:
             print("\nSample FactNationalAccounts records:")
             for i, record in enumerate(na_records[:5]):
-                print(f"  {i+1}: ID={record.fact_id}, variable='{record.variable_name}', value={record.value}, date_id={record.date_id}, province_id={record.province_id}")
+                print(f"  {i+1}: ID={record.accounts_fact_id}, variable='{record.variable_name}', value={record.value}, date_id={record.date_id}, province_id={record.province_id}")
         
         # Check labour data
         labour_records = db.session.query(FactLabour).all()
@@ -499,7 +517,7 @@ def check_fact_table_data():
         if labour_records:
             print("\nSample FactLabour records:")
             for i, record in enumerate(labour_records[:5]):
-                print(f"  {i+1}: ID={record.fact_id}, variable='{record.variable_name}', value={record.value}, date_id={record.date_id}, province_id={record.province_id}")
+                print(f"  {i+1}: ID={record.labour_fact_id}, variable='{record.variable_name}', value={record.value}, date_id={record.date_id}, province_id={record.province_id}")
         
         # Check dimension tables
         print("\n=== DIMENSION TABLES ===")
@@ -1172,19 +1190,20 @@ def assemble_trade(filters):
     periods, exports_ts, imports_ts = query_trade_timeseries(filters)
     
     # Calculate trade metrics
-    trade_deficit = abs(trade_data['balance']) if trade_data['balance'] < 0 else 0
+    trade_balance = trade_data.get('trade_balance', 0)
+    trade_deficit = abs(trade_balance) if trade_balance < 0 else 0
     export_growth = ((exports_ts[-1] - exports_ts[-2]) / exports_ts[-2] * 100) if len(exports_ts) >= 2 else 0
     import_growth = ((imports_ts[-1] - imports_ts[-2]) / imports_ts[-2] * 100) if len(imports_ts) >= 2 else 0
 
     kpis = [
         {'label': 'Exports (US$ M)', 'value': f"{trade_data['exports']:,.0f}"},
         {'label': 'Imports (US$ M)', 'value': f"{trade_data['imports']:,.0f}"},
-        {'label': 'Trade balance (US$ M)', 'value': f"{trade_data['balance']:,.0f}"},
+        {'label': 'Trade balance (US$ M)', 'value': f"{trade_balance:,.0f}"},
         {'label': 'Cover ratio', 'value': f"{trade_data['cover']:.1f}%"},
         {'label': 'Export growth', 'value': f"{export_growth:.1f}%"},
         {'label': 'Import growth', 'value': f"{import_growth:.1f}%"},
         {'label': 'Trade deficit', 'value': f"${trade_deficit:,.0f}M"},
-        {'label': 'Net exports', 'value': f"${trade_data['balance']:,.0f}M"},
+        {'label': 'Net exports', 'value': f"${trade_balance:,.0f}M"},
     ]
 
     if not periods:

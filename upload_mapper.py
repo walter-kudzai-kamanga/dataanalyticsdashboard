@@ -122,44 +122,45 @@ class UploadMapper:
         
         for _, row in df.iterrows():
             mapped_row = {
-                'date_id': self.get_date_id(year=2025, quarter=2),  # Default to 2025 Q2
+                'date_id': self.get_date_id(year=self.extract_year(row)),
                 'variable_name': self.determine_labour_variable(table_name, row),
                 'value': self.extract_value(row)
             }
             
-            # Map dimensions based on available columns
-            if 'province' in row and pd.notna(row['province']):
-                mapped_row['province_id'] = self.get_geo_id(row['province'])
-            
-            if 'industry' in row and pd.notna(row['industry']):
-                mapped_row['industry_id'] = self.get_industry_id(row['industry'])
-            
+            # Map demographics if available
             if 'sex' in row and pd.notna(row['sex']):
                 mapped_row['sex_id'] = self.get_demo_id(sex=row['sex'])
-            
-            if 'occupation' in row and pd.notna(row['occupation']):
-                mapped_row['occupation_id'] = self.get_demo_id(occupation=row['occupation'])
             
             if 'age_group' in row and pd.notna(row['age_group']):
                 mapped_row['age_group_id'] = self.get_demo_id(age_group=row['age_group'])
             
-            # Only include rows with actual data (not all None)
-            has_valid_data = any([
-                mapped_row.get('province_id'),
-                mapped_row.get('industry_id'),
-                mapped_row.get('sex_id'),
-                mapped_row.get('occupation_id'),
-                mapped_row.get('age_group_id')
-            ])
+            # Handle specific column mappings for youth population data
+            if 'male_youth_population' in row and pd.notna(row['male_youth_population']):
+                mapped_row['variable_name'] = 'male_youth_population'
+                mapped_row['sex_id'] = 1  # Male
+                mapped_row['age_group_id'] = 1  # Youth (15-24)
+                mapped_row['value'] = float(row['male_youth_population']) if pd.notna(row['male_youth_population']) else 0
             
-            # Only include rows with valid mappings OR valid data
-            if has_valid_data and mapped_row.get('value') not in [None, 0, '']:
+            if 'female_youth_population' in row and pd.notna(row['female_youth_population']):
+                mapped_row['variable_name'] = 'female_youth_population'
+                mapped_row['sex_id'] = 2  # Female
+                mapped_row['age_group_id'] = 1  # Youth (15-24)
+                mapped_row['value'] = float(row['female_youth_population']) if pd.notna(row['female_youth_population']) else 0
+            
+            # Only include rows with actual data
+            if mapped_row.get('value') not in [None, 0, '']:
                 mapped_data.append(mapped_row)
         
         return mapped_data
     
     def determine_labour_variable(self, table_name, row):
         """Determine variable_name based on table name and row content"""
+        # If specific columns exist, use them directly
+        if 'male_youth_population' in row and pd.notna(row['male_youth_population']):
+            return 'male_youth_population'
+        if 'female_youth_population' in row and pd.notna(row['female_youth_population']):
+            return 'female_youth_population'
+        
         table_lower = table_name.lower()
         
         # Map based on table name patterns
@@ -171,21 +172,64 @@ class UploadMapper:
             return 'job_losses_by_industry'
         elif 'work related illness' in table_lower:
             return 'work_related_illness'
-        elif 'employed population' in table_lower and 'informal' not in table_lower:
-            return 'employed_population'
-        elif 'informal employment' in table_lower:
-            return 'informal_employment'
-        elif 'actual hours worked' in table_lower:
-            return 'actual_hours_worked'
-        elif 'employment by area' in table_lower:
-            return 'employment_by_area'
+        elif 'employed population' in table_lower:
+            if 'informal employment' in table_lower:
+                return 'informal_employment'
+            elif 'occupation' in table_lower:
+                return 'employment_by_occupation'
+            elif 'industry' in table_lower:
+                return 'employment_by_industry'
+            elif 'province' in table_lower:
+                return 'employment_by_province'
+            elif 'status of employment' in table_lower:
+                return 'employment_by_status'
+            elif 'actual hours worked' in table_lower:
+                return 'employment_by_hours_worked'
+            elif 'area' in table_lower:
+                return 'employment_by_area'
+            else:
+                return 'employed_population'
+        elif 'time-related under-employment' in table_lower:
+            return 'under_employment'
+        elif 'population of youth' in table_lower:
+            return 'youth_neet_population'
         elif 'labour migrants' in table_lower:
             return 'labour_migrants'
-        elif 'time related under employment' in table_lower:
-            return 'time_related_underemployment'
-        elif 'youth not in education' in table_lower:
-            return 'youth_neet_population'
-        elif 'annual average' in table_lower or 'quarterly average' in table_lower:
+        elif 'migrants by industry' in table_lower:
+            if 'percent' in table_lower:
+                return 'industry_migrants_percent'
+            else:
+                return 'industry_migrants_number'
+        elif 'employee annual average' in table_lower:
+            return 'employee_annual_average'
+        elif 'employee annual earnings' in table_lower:
+            if 'zwl' in table_lower:
+                return 'annual_earnings_zwl'
+            elif 'usd' in table_lower:
+                return 'annual_earnings_usd'
+            else:
+                return 'annual_earnings'
+        elif 'employee quarterly' in table_lower:
+            if 'average' in table_lower:
+                return 'quarterly_average'
+            elif 'earnings' in table_lower:
+                if 'zwl' in table_lower or 'zig' in table_lower:
+                    return 'quarterly_earnings_zwl'
+                elif 'usd' in table_lower:
+                    return 'quarterly_earnings_usd'
+                else:
+                    return 'quarterly_earnings'
+            else:
+                return 'quarterly_employee_data'
+        elif 'employment by' in table_lower:
+            if 'province' in table_lower:
+                return 'employment_by_province'
+            elif 'area' in table_lower:
+                return 'employment_by_area'
+            elif 'sex' in table_lower:
+                return 'employment_by_sex'
+            else:
+                return 'employment'
             return 'employee_average'
         elif 'earnings' in table_lower:
             return 'employee_earnings'
@@ -200,8 +244,21 @@ class UploadMapper:
         mapped_data = []
         
         for _, row in df.iterrows():
+            # Extract date from period column for prices data
+            date_id = self.get_date_id(year=2025)  # Default
+            if 'period' in row and pd.notna(row['period']):
+                try:
+                    # Try to extract year from period like '2024-04-01'
+                    period_str = str(row['period'])
+                    if '-' in period_str:
+                        year_part = period_str.split('-')[0]
+                        date_id = self.get_date_id(year=int(year_part))
+                        print(f"DEBUG: Extracted year {year_part} from period {period_str}, date_id={date_id}")
+                except:
+                    pass
+            
             mapped_row = {
-                'date_id': self.get_date_id(year=2025),  # Default year
+                'date_id': date_id,
                 'variable_name': self.determine_prices_variable(table_name, row),
                 'value': self.extract_value(row),
                 'currency_id': 1  # Default to USD
@@ -219,23 +276,70 @@ class UploadMapper:
     
     def determine_prices_variable(self, table_name, row):
         """Determine prices variable based on table name"""
+        # First priority: use 'variable' column if it exists and has valid data
+        if 'variable' in row and pd.notna(row['variable']):
+            variable_value = str(row['variable']).lower().replace(' ', '_')
+            print(f"DEBUG: Using variable column value: {variable_value}")
+            return variable_value
+        
+        # Fallback: map based on table name patterns
         table_lower = table_name.lower()
         
-        if 'cpi index' in table_lower:
-            return 'cpi_index'
-        elif 'inflation' in table_lower and 'monthly' in table_lower:
-            return 'monthly_inflation'
-        elif 'inflation' in table_lower and 'year' in table_lower:
-            return 'annual_inflation'
-        elif 'weighted' in table_lower and 'index' in table_lower:
+        # Map based on table name patterns
+        if 'cpi usd index' in table_lower:
+            return 'cpi_usd_index'
+        elif 'cpi usd monthly and yearly inflation' in table_lower:
+            return 'cpi_usd_monthly_yearly_inflation'
+        elif 'cpi usd year-on-year inflation' in table_lower:
+            return 'cpi_usd_year_on_year_inflation'
+        elif 'cpi weighted annual summary' in table_lower:
+            return 'cpi_weighted_annual_summary'
+        elif 'cpi weighted index' in table_lower:
             return 'cpi_weighted_index'
-        elif 'weighted' in table_lower and 'inflation' in table_lower:
-            return 'cpi_weighted_inflation'
+        elif 'cpi weighted monthly and yearly inflation' in table_lower:
+            return 'cpi_weighted_monthly_yearly_inflation'
+        elif 'cpi zwg index' in table_lower:
+            return 'cpi_zwg_index'
+        elif 'provincial cpi index usd' in table_lower:
+            return 'provincial_cpi_usd_index'
+        elif 'provincial cpi zwg index' in table_lower:
+            return 'provincial_cpi_zwg_index'
+        elif 'provincial monthly usd inflation rates' in table_lower:
+            return 'provincial_monthly_usd_inflation_rates'
+        elif 'cpi index' in table_lower:
+            if 'usd' in table_lower:
+                return 'cpi_usd'
+            elif 'zwg' in table_lower:
+                return 'cpi_zwg'
+            elif 'weighted' in table_lower:
+                return 'cpi_weighted'
+            elif 'provincial' in table_lower:
+                return 'provincial_cpi'
+            else:
+                return 'cpi_index'
+        elif 'inflation' in table_lower:
+            if 'monthly' in table_lower:
+                return 'monthly_inflation'
+            elif 'yearly' in table_lower:
+                return 'annual_inflation'
+            elif 'year-on-year' in table_lower:
+                return 'year_on_year_inflation'
+            elif 'provincial' in table_lower:
+                return 'provincial_inflation'
+            else:
+                return 'inflation_rate'
+        elif 'weighted' in table_lower:
+            if 'index' in table_lower:
+                return 'cpi_weighted_index'
+            elif 'inflation' in table_lower:
+                return 'cpi_weighted_inflation'
+            elif 'annual' in table_lower:
+                return 'cpi_weighted_annual'
+            else:
+                return 'cpi_weighted'
         elif 'provincial cpi' in table_lower:
             return 'provincial_cpi_index'
         else:
-            if 'variable' in row and pd.notna(row['variable']):
-                return str(row['variable']).lower().replace(' ', '_')
             return 'unknown_price_variable'
     
     def map_accounts_data(self, df, table_name):
@@ -267,7 +371,23 @@ class UploadMapper:
         """Determine national accounts variable"""
         table_lower = table_name.lower()
         
-        if 'earnings' in table_lower and 'industrial sector' in table_lower:
+        # Map based on table name patterns
+        if 'annual usd earnings' in table_lower:
+            return 'annual_usd_earnings'
+        elif 'current prices gdp shares' in table_lower:
+            return 'gdp_shares_current_prices'
+        elif 'provincial gdp at constant prices' in table_lower:
+            if '2023' in table_lower:
+                return 'provincial_gdp_constant_2023'
+            elif '2021' in table_lower and 'zwl' in table_lower:
+                return 'provincial_gdp_constant_zwl_2021'
+            elif '2022' in table_lower and 'zwl' in table_lower:
+                return 'provincial_gdp_constant_zwl_2022'
+            elif '2023' in table_lower and 'zwl' in table_lower:
+                return 'provincial_gdp_constant_zwl_2023'
+            else:
+                return 'provincial_gdp_constant'
+        elif 'earnings' in table_lower and 'industrial sector' in table_lower:
             return 'earnings_by_industrial_sector'
         elif 'gdp' in table_lower and 'constant prices' in table_lower:
             return 'gdp_constant'
@@ -276,6 +396,7 @@ class UploadMapper:
         elif 'provincial gdp' in table_lower:
             return 'provincial_gdp'
         else:
+            # If 'variable' column exists, use it directly
             if 'variable' in row and pd.notna(row['variable']):
                 return str(row['variable']).lower().replace(' ', '_')
             return 'unknown_accounts_variable'
@@ -309,20 +430,72 @@ class UploadMapper:
     
     def determine_trade_variable(self, table_name, row):
         """Determine trade variable"""
+        # If 'variable' column exists, use it directly
+        if 'variable' in row and pd.notna(row['variable']):
+            return str(row['variable']).lower().replace(' ', '_')
+        
+        # Fallback to table name
         table_lower = table_name.lower()
         
-        if 'exports' in table_lower and 'weight' in table_lower:
-            return 'exports_net_weight'
-        elif 'exports' in table_lower and 'share' in table_lower:
-            return 'exports_share'
-        elif 'exports' in table_lower and 'value' in table_lower:
-            return 'exports_value'
-        elif 'imports' in table_lower and 'share' in table_lower:
-            return 'imports_share'
-        elif 'imports' in table_lower and 'value' in table_lower:
-            return 'imports_value'
+        # Map based on table name patterns
+        if 'comesa exports' in table_lower:
+            if 'net weight' in table_lower:
+                return 'comesa_exports_net_weight'
+            elif 'share' in table_lower:
+                return 'comesa_exports_share'
+            elif 'value' in table_lower:
+                return 'comesa_exports_value'
+            else:
+                return 'comesa_exports'
+        elif 'eccas exports' in table_lower:
+            if 'net weight' in table_lower:
+                return 'eccas_exports_net_weight'
+            elif 'share' in table_lower:
+                return 'eccas_exports_share'
+            elif 'value' in table_lower:
+                return 'eccas_exports_value'
+            else:
+                return 'eccas_exports'
+        elif 'exports bec' in table_lower:
+            return 'exports_bec'
+        elif 'imports country share' in table_lower:
+            return 'imports_country_share'
+        elif 'imports from eu net weight' in table_lower:
+            return 'imports_from_eu_net_weight'
+        elif 'imports country value' in table_lower:
+            return 'imports_country_value'
+        elif 'imports from eu share' in table_lower:
+            return 'imports_from_eu_share'
+        elif 'imports from eu value' in table_lower:
+            return 'imports_from_eu_value'
+        elif 'trade export share by country' in table_lower:
+            return 'export_share_by_country'
+        elif 'trade export value by country' in table_lower:
+            return 'export_value_by_country'
+        elif 'trade exports by net weight to afcfta' in table_lower:
+            return 'exports_net_weight_afcfta'
         elif 'trade summary' in table_lower:
             return 'trade_summary'
+        elif 'exports' in table_lower:
+            if 'net weight' in table_lower:
+                return 'exports_net_weight'
+            elif 'share' in table_lower:
+                return 'exports_share'
+            elif 'value' in table_lower:
+                return 'exports_value'
+            else:
+                return 'exports'
+        elif 'imports' in table_lower:
+            if 'net weight' in table_lower:
+                return 'imports_net_weight'
+            elif 'share' in table_lower:
+                return 'imports_share'
+            elif 'value' in table_lower:
+                return 'imports_value'
+            else:
+                return 'imports'
+        elif 'trade_balance' in table_lower:
+            return 'trade_balance'
         else:
             if 'variable' in row and pd.notna(row['variable']):
                 return str(row['variable']).lower().replace(' ', '_')
@@ -426,6 +599,9 @@ class UploadMapper:
             result = self.save_to_fact_table(mapped_data, 'fact_national_accounts')
         elif domain == 'trade':
             mapped_data = self.map_trade_data(df, table_name)
+            result = self.save_to_fact_table(mapped_data, 'fact_trade')
+        elif domain == 'bop & finance':
+            mapped_data = self.map_trade_data(df, table_name)  # BOP & Finance uses trade structure
             result = self.save_to_fact_table(mapped_data, 'fact_trade')
         else:
             print(f"DEBUG: Unknown domain: {domain}")
