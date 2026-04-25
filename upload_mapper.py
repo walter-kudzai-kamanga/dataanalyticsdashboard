@@ -115,6 +115,65 @@ class UploadMapper:
             sex = str(sex).lower().strip()
             return self.sex_mappings.get(sex)
         return None
+
+    def clean_dataframe(self, df):
+        """Normalize uploaded data before domain mapping."""
+        if df is None or df.empty:
+            return pd.DataFrame()
+
+        df = df.copy()
+        # Normalize column names to predictable snake_case.
+        normalized = {}
+        for col in df.columns:
+            new_col = re.sub(r'[^a-zA-Z0-9]+', '_', str(col).strip().lower()).strip('_')
+            if not new_col:
+                continue
+            normalized[col] = new_col
+        df = df.rename(columns=normalized)
+
+        # Drop empty rows/columns and duplicate rows.
+        df = df.dropna(how='all').dropna(axis=1, how='all').drop_duplicates()
+        if df.empty:
+            return df
+
+        # Standardize common aliases used in uploads.
+        alias_map = {
+            'province_name': 'province',
+            'region_name': 'region',
+            'sex_gender': 'sex',
+            'gender': 'sex',
+            'yr': 'year',
+            'yyyy': 'year',
+            'time_period': 'period',
+            'indicator_name': 'indicator',
+            'measure': 'value',
+            'amount': 'value',
+        }
+        for src, dest in alias_map.items():
+            if src in df.columns and dest not in df.columns:
+                df = df.rename(columns={src: dest})
+
+        # Strip whitespace for string columns.
+        object_cols = df.select_dtypes(include=['object']).columns
+        for col in object_cols:
+            df[col] = df[col].astype(str).str.strip()
+            df[col] = df[col].replace({'': None, 'nan': None, 'none': None, 'null': None})
+
+        # Coerce potential numeric columns.
+        numeric_hints = ('value', 'amount', 'total', 'index', 'rate', 'share', 'gdp', 'export', 'import')
+        for col in df.columns:
+            col_lower = col.lower()
+            if any(h in col_lower for h in numeric_hints):
+                cleaned = (
+                    df[col]
+                    .astype(str)
+                    .str.replace(',', '', regex=False)
+                    .str.replace('%', '', regex=False)
+                    .str.replace(' ', '', regex=False)
+                )
+                df[col] = pd.to_numeric(cleaned, errors='coerce')
+
+        return df
     
     def map_labour_data(self, df, table_name):
         """Map labour data to fact_labour table"""
@@ -406,25 +465,52 @@ class UploadMapper:
         mapped_data = []
         
         for _, row in df.iterrows():
-            mapped_row = {
-                'date_id': self.get_date_id(year=self.extract_year(row)),
-                'variable_name': self.determine_trade_variable(table_name, row),
-                'value': self.extract_value(row)
-            }
+            date_id = self.get_date_id(year=self.extract_year(row))
+            country_id = None
+            if 'country' in row and pd.notna(row['country']):
+                country_id = self.get_geo_id(row['country'])
+            elif 'province' in row and pd.notna(row['province']):
+                country_id = self.get_geo_id(row['province'])
             
             # Map trade group if available
+            trade_group_id = None
             if 'comesa' in table_name.lower():
-                mapped_row['trade_group_id'] = 1
+                trade_group_id = 1
             elif 'eccas' in table_name.lower():
-                mapped_row['trade_group_id'] = 2
+                trade_group_id = 2
             elif 'eu' in table_name.lower():
-                mapped_row['trade_group_id'] = 3
+                trade_group_id = 3
             elif 'afcfta' in table_name.lower():
-                mapped_row['trade_group_id'] = 4
-            
-            # Include rows with actual data
-            if mapped_row.get('value') not in [None, 0, '']:
-                mapped_data.append(mapped_row)
+                trade_group_id = 4
+
+            has_export_import_columns = False
+            for column_name, variable_name in [('exports', 'exports_value'), ('imports', 'imports_value')]:
+                if column_name in row and pd.notna(row[column_name]):
+                    has_export_import_columns = True
+                    try:
+                        value = float(row[column_name])
+                    except (TypeError, ValueError):
+                        continue
+                    if value == 0:
+                        continue
+                    mapped_data.append({
+                        'date_id': date_id,
+                        'country_id': country_id,
+                        'trade_group_id': trade_group_id,
+                        'variable_name': variable_name,
+                        'value': value
+                    })
+
+            if not has_export_import_columns:
+                mapped_row = {
+                    'date_id': date_id,
+                    'country_id': country_id,
+                    'trade_group_id': trade_group_id,
+                    'variable_name': self.determine_trade_variable(table_name, row),
+                    'value': self.extract_value(row)
+                }
+                if mapped_row.get('value') not in [None, 0, '']:
+                    mapped_data.append(mapped_row)
         
         return mapped_data
     
@@ -515,11 +601,22 @@ class UploadMapper:
     
     def extract_value(self, row):
         """Extract numeric value from row"""
-        if 'value' in row and pd.notna(row['value']):
+        preferred_cols = ['value', 'amount', 'total', 'index', 'rate', 'share', 'gdp', 'exports', 'imports']
+        for col in preferred_cols:
+            if col in row and pd.notna(row[col]):
+                try:
+                    return float(str(row[col]).replace(',', '').replace('%', '').strip())
+                except Exception:
+                    continue
+
+        # Last fallback: first parseable numeric value in row.
+        for _, cell in row.items():
+            if pd.isna(cell):
+                continue
             try:
-                return float(str(row['value']).replace(',', ''))
-            except:
-                return 0.0
+                return float(str(cell).replace(',', '').replace('%', '').strip())
+            except Exception:
+                continue
         return 0.0
     
     def save_to_fact_table(self, data, table_name):
@@ -579,6 +676,10 @@ class UploadMapper:
     
     def process_upload(self, df, table_name, domain):
         """Main processing function for uploaded data"""
+        df = self.clean_dataframe(df)
+        if df.empty:
+            return 0
+
         # Clean table name
         clean_table_name = table_name.strip().lower()
         

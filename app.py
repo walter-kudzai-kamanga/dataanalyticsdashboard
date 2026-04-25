@@ -303,6 +303,9 @@ def find_data_total(keywords, indicator_names, filters=None, mode='all'):
                                 params.extend([f'{year}%', year])
                             break
 
+                q = f'SELECT SUM(CAST("{val_col}" AS REAL)) FROM "{tbl}"'
+                if conditions:
+                    q += ' WHERE ' + ' AND '.join(conditions)
                 res = query_db(q, params, one=True)
                 if res and res[0] is not None:
                     try:
@@ -338,35 +341,35 @@ def query_labour_by_province(filters):
         if gender and gender in ['Male', 'Female']:
             query = query.join(DimDemographics, FactLabour.sex_id == DimDemographics.demo_id).filter(DimDemographics.sex == gender)
         
-        # Get all data for debugging
-        all_results = query.all()
-        print(f"DEBUG: Found {len(all_results)} labour records")
-        
-        if all_results:
-            print(f"DEBUG: Sample record: {all_results[0][0].variable_name}, {all_results[0][0].value}")
-        
-        # Get employed population data - try multiple variable names
         prov_data = {}
-        for variable_name in ['employed_population', 'employed', 'employment', 'value']:
-            query_var = query.filter(FactLabour.variable_name == variable_name)
-            results = query_var.all()
-            print(f"DEBUG: Found {len(results)} records for variable '{variable_name}'")
-            
-            for fact, geo in results:
-                province = geo.province
-                value = safe_float(fact.value)
-                if province and value > 0:
-                    prov_data[province] = prov_data.get(province, 0) + value
+        results = query.filter(FactLabour.value.isnot(None)).all()
+        for fact, geo in results:
+            name = (fact.variable_name or '').lower()
+            if 'unemploy' in name:
+                continue
+            province = geo.province
+            value = safe_float(fact.value)
+            if province and value > 0:
+                prov_data[province] = prov_data.get(province, 0.0) + value
         
         if prov_data:
             top = sorted(prov_data.items(), key=lambda x: x[1], reverse=True)[:5]
             labels = [t[0] for t in top]
             data = [t[1] for t in top]
-            print(f"DEBUG: Province data: {labels}, {data}")
         else:
-            # Return empty data when no data exists
-            labels = []
-            data = []
+            # Fallback when uploads encoded province in variable_name instead of province_id.
+            fallback = {}
+            fallback_rows = db.session.query(FactLabour).filter(FactLabour.value.isnot(None)).all()
+            for fact in fallback_rows:
+                candidate = (fact.variable_name or '').replace('_', ' ').title()
+                if candidate in ['Harare', 'Bulawayo', 'Manicaland', 'Mashonaland Central', 'Mashonaland East',
+                                 'Mashonaland West', 'Matabeleland North', 'Matabeleland South', 'Midlands', 'Masvingo']:
+                    value = safe_float(fact.value)
+                    if value > 0:
+                        fallback[candidate] = fallback.get(candidate, 0.0) + value
+            top = sorted(fallback.items(), key=lambda x: x[1], reverse=True)[:5]
+            labels = [t[0] for t in top]
+            data = [t[1] for t in top]
         
         return labels, data
 
@@ -384,68 +387,33 @@ def query_gdp_by_sector(filters):
         filters = {}
     
     with app.app_context():
-        # First, let's see what's actually in the fact table
-        all_records = db.session.query(FactNationalAccounts).all()
-        print(f"DEBUG: Total records in fact_national_accounts: {len(all_records)}")
-        
-        if all_records:
-            print(f"DEBUG: Sample records:")
-            for i, record in enumerate(all_records[:5]):
-                print(f"  {i+1}: variable={record.variable_name}, value={record.value}, date_id={record.date_id}, province_id={record.province_id}")
-        
         year = filters.get('year', '2025')
-        
-        # Base query - try without complex joins first
-        query = db.session.query(FactNationalAccounts)
-        
-        # Apply year filter if we can join with date table
-        try:
-            query = query.join(DimDate, FactNationalAccounts.date_id == DimDate.date_id)
-            if year:
-                query = query.filter(DimDate.year == int(float(year)))
-        except:
-            print("DEBUG: Could not join with DimDate")
-        
-        # Get all matching records
-        results = query.all()
-        print(f"DEBUG: Found {len(results)} records after filtering")
-        
-        # Group by industry/sector
+        query = db.session.query(FactNationalAccounts, DimIndustry).outerjoin(
+            DimIndustry, FactNationalAccounts.industry_id == DimIndustry.industry_id
+        ).join(DimDate, FactNationalAccounts.date_id == DimDate.date_id)
+        if year:
+            query = query.filter(DimDate.year == int(float(year)))
+        region = filters.get('region')
+        if region and region != 'All':
+            query = query.join(DimGeography, FactNationalAccounts.province_id == DimGeography.geo_id).filter(
+                DimGeography.province == region
+            )
+
+        results = query.filter(FactNationalAccounts.value.isnot(None)).all()
         sector_data = {}
-        for fact in results:
-            # If variable_name is an industry, use it directly
-            if fact.variable_name and fact.variable_name in [
-                'mining_and_quarrying', 'manufacturing', 'electricity_gas_steam_and_air_conditioning_supply',
-                'water_supply_sewerage_waste_management_remediation_activities', 'construction',
-                'wholesale_and_retail_trade_repair_of_motor_vehicles_and_motorcycles',
-                'transportation_and_storage', 'accommodation_and_food_service_activities',
-                'information_and_communication', 'financial_and_insurance_activities',
-                'real_estate_activities', 'professional_scientific_and_technical_activities',
-                'administrative_and_support_service_activities', 'public_administration_and_defence_compulsary_social_security',
-                'education', 'human_health_and_social_work_activities',
-                'arts_entertainment_and_recreation', 'other_services',
-                'agriculture_forestry_and_fishing'
-            ]:
-                # Convert variable name to readable format
-                sector_name = fact.variable_name.replace('_', ' ').title()
-                value = safe_float(fact.value)
-                if value > 0:
-                    sector_data[sector_name] = sector_data.get(sector_name, 0) + value
-            else:
-                # Fallback to province if it's a province name
-                if fact.variable_name and fact.variable_name in ['manicaland', 'harare', 'bulawayo', 'mashonaland_central', 'mashonaland_east', 'mashonaland_west', 'matabeleland_north', 'matabeleland_south', 'midlands', 'masvingo']:
-                    province_name = fact.variable_name.title()
-                    value = safe_float(fact.value)
-                    if value > 0:
-                        sector_data[province_name] = sector_data.get(province_name, 0) + value
+        for fact, industry in results:
+            value = safe_float(fact.value)
+            if value <= 0:
+                continue
+            sector_name = industry.industry_name if industry and industry.industry_name else (fact.variable_name or "Other")
+            sector_name = str(sector_name).replace('_', ' ').title()
+            sector_data[sector_name] = sector_data.get(sector_name, 0.0) + value
         
         if sector_data:
             top = sorted(sector_data.items(), key=lambda x: x[1], reverse=True)[:5]
             labels = [t[0] for t in top]
             data = [t[1] for t in top]
-            print(f"DEBUG: Sector data: {labels}, {data}")
         else:
-            # Return empty data when no data exists
             labels = []
             data = []
         
@@ -470,14 +438,18 @@ def query_trade_kpis(filters):
 def query_imports_by_province():
     """Imports by province for trade extra chart using fact tables."""
     with app.app_context():
-        # Query fact_trade for import data by province
-        query = db.session.query(FactTrade, DimGeography).join(DimGeography, FactTrade.country_id == DimGeography.geo_id).filter(FactTrade.variable_name == 'import_value')
-        
+        query = db.session.query(FactTrade, DimGeography).join(
+            DimGeography, FactTrade.country_id == DimGeography.geo_id
+        ).filter(FactTrade.value.isnot(None))
+
         results = query.all()
         
         prov_imports = {}
         for fact, geo in results:
-            province = geo.province
+            name = (fact.variable_name or '').lower()
+            if 'import' not in name:
+                continue
+            province = geo.province or geo.country
             value = safe_float(fact.value)
             if province:
                 prov_imports[province] = prov_imports.get(province, 0) + value
@@ -487,7 +459,6 @@ def query_imports_by_province():
             labels = [t[0] for t in top]
             data = [t[1] for t in top]
         else:
-            # Return empty data when no data exists
             labels = []
             data = []
         

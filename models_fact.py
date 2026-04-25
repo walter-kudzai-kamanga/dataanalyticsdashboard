@@ -8,6 +8,17 @@ from sqlalchemy.orm import relationship
 
 db = SQLAlchemy()
 
+
+def _safe_year(year_value):
+    try:
+        return int(float(year_value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _norm(value):
+    return str(value).strip().lower() if value is not None else ""
+
 # DIMENSION TABLES
 
 class DimDate(db.Model):
@@ -143,57 +154,41 @@ def query_labour_kpis_fact(filters=None):
     if filters is None:
         filters = {}
     
-    print("=== LABOUR KPI INVESTIGATION ===")
-    
-    year = filters.get('year')
+    year = _safe_year(filters.get('year'))
     region = filters.get('region')
     gender = filters.get('gender')
-    
-    # Base query
+
     query = db.session.query(FactLabour)
-    
-    # Apply filters
-    if year:
-        query = query.join(DimDate).filter(DimDate.year == int(float(year)))
-    
+    if year is not None:
+        query = query.join(DimDate, FactLabour.date_id == DimDate.date_id).filter(DimDate.year == year)
     if region and region != 'All':
-        query = query.join(DimGeography).filter(DimGeography.province == region)
-    
-    # First, let's see what variable names actually exist
-    all_records = query.all()
-    variable_names = set([record.variable_name for record in all_records])
-    print(f"Available variable names in fact_labour: {variable_names}")
-    
-    # Get all values as population data (since variable names are provinces)
-    employed_total = 0
-    unemployed_total = 0
-    
-    # If variable names are provinces, treat all as population data
-    if variable_names and any(name in ['manicaland', 'harare', 'bulawayo'] for name in variable_names):
-        # Sum all values as total population
-        all_values = [float(record.value) for record in all_records if record.value and float(record.value) > 0]
-        total_population = sum(all_values)
-        # Assume 60% employment rate as estimate
-        employed_total = total_population * 0.6
-        unemployed_total = total_population * 0.2
-        print(f"Calculated from province data: total={total_population}, employed={employed_total}, unemployed={unemployed_total}")
-    else:
-        # Try traditional variable names
-        for var_name in ['employed_population', 'employed', 'employment', 'value']:
-            employed_query = query.filter(FactLabour.variable_name == var_name)
-            employed_records = employed_query.all()
-            if employed_records:
-                employed_total = sum([float(row.value) for row in employed_records if row.value])
-                print(f"Found {len(employed_records)} records for '{var_name}' = {employed_total}")
-                break
-        
-        for var_name in ['unemployed_population', 'unemployed', 'unemployment', 'value']:
-            unemployed_query = query.filter(FactLabour.variable_name == var_name)
-            unemployed_records = unemployed_query.all()
-            if unemployed_records:
-                unemployed_total = sum([float(row.value) for row in unemployed_records if row.value])
-                print(f"Found {len(unemployed_records)} records for '{var_name}' = {unemployed_total}")
-                break
+        query = query.join(DimGeography, FactLabour.province_id == DimGeography.geo_id).filter(DimGeography.province == region)
+    if gender and gender != 'All':
+        query = query.join(DimDemographics, FactLabour.sex_id == DimDemographics.demo_id).filter(DimDemographics.sex == gender)
+
+    all_records = query.filter(FactLabour.value.isnot(None)).all()
+    employed_total = 0.0
+    unemployed_total = 0.0
+
+    for record in all_records:
+        name = _norm(record.variable_name)
+        try:
+            value = float(record.value)
+        except (TypeError, ValueError):
+            continue
+        if value <= 0:
+            continue
+
+        if any(token in name for token in ['unemploy', 'jobless']):
+            unemployed_total += value
+        elif any(token in name for token in ['employ', 'labour_force', 'labor_force', 'work']):
+            employed_total += value
+
+    # Fallback if uploads only provided one generic labour metric.
+    if employed_total == 0 and unemployed_total == 0:
+        total_population = sum(float(r.value) for r in all_records if r.value is not None)
+        employed_total = total_population * 0.7
+        unemployed_total = total_population * 0.3
     
     # Calculate derived metrics
     labour_force = employed_total + unemployed_total
@@ -206,9 +201,6 @@ def query_labour_kpis_fact(filters=None):
         'unemp_rate': unemp_rate
     }
     
-    print(f"Labour KPI result: {result}")
-    print("=== END LABOUR KPI INVESTIGATION ===\n")
-    
     return result
 
 def query_prices_kpis_fact(filters=None):
@@ -216,70 +208,32 @@ def query_prices_kpis_fact(filters=None):
     if filters is None:
         filters = {}
     
-    print("=== PRICES KPI INVESTIGATION ===")
-    
-    year = filters.get('year')
-    
-    # Base query
+    year = _safe_year(filters.get('year'))
+    region = filters.get('region')
     query = db.session.query(FactPrices)
-    
-    # Apply year filter
-    if year:
-        query = query.join(DimDate).filter(DimDate.year == int(float(year)))
-    
-    # First, let's see what variable names actually exist
-    all_records = query.all()
-    variable_names = set([record.variable_name for record in all_records])
-    print(f"Available variable names in fact_prices: {variable_names}")
-    
-    # Initialize KPI values
-    cpi_value = 0
-    inflation_rate = 0
-    food_cpi = 0
-    
-    # Calculate from available variables
-    for var_name in variable_names:
-        # Handle CPI index variables
-        if 'cpi' in var_name.lower() and 'index' in var_name.lower():
-            records = query.filter(FactPrices.variable_name == var_name).all()
-            if records:
-                cpi_value = sum([float(row.value) for row in records if row.value]) / len(records)
-                print(f"Found CPI from '{var_name}': {cpi_value}")
-        
-        # Handle inflation variables
-        elif 'inflation' in var_name.lower():
-            records = query.filter(FactPrices.variable_name == var_name).all()
-            if records:
-                inflation_rate = sum([float(row.value) for row in records if row.value]) / len(records)
-                print(f"Found inflation from '{var_name}': {inflation_rate}")
-        
-        # Handle specific category CPI variables (food, transport, etc.)
-        elif var_name in ['food_and_non_alcoholic_beverages', 'alcoholic_beverages_and_tobacco', 'clothing_and_footwear', 'transport', 'health', 'housing_water_electricity_gas_and_other_fuels']:
-            records = query.filter(FactPrices.variable_name == var_name).all()
-            if records:
-                category_cpi = sum([float(row.value) for row in records if row.value]) / len(records)
-                print(f"Found category CPI from '{var_name}': {category_cpi}")
-                # Use the highest category CPI as overall CPI
-                if category_cpi > cpi_value:
-                    cpi_value = category_cpi
-        
-        # Handle provincial CPI data
-        elif var_name in ['bulawayo', 'harare', 'manicaland', 'mashonaland_central', 'mashonaland_east', 'mashonaland_west', 'matabeleland_north', 'matabeleland_south', 'midlands', 'masvingo', 'mat_north', 'mat_south', 'mash_central', 'mash_west', 'mash_east']:
-            records = query.filter(FactPrices.variable_name == var_name).all()
-            if records:
-                provincial_cpi = sum([float(row.value) for row in records if row.value]) / len(records)
-                print(f"Found provincial CPI from '{var_name}': {provincial_cpi}")
-                # Use average provincial CPI as overall CPI
-                if cpi_value == 0:
-                    cpi_value = provincial_cpi
-        
-        # Handle any remaining variables as potential CPI
-        elif cpi_value == 0:
-            records = query.filter(FactPrices.variable_name == var_name).all()
-            if records:
-                potential_cpi = sum([float(row.value) for row in records if row.value]) / len(records)
-                print(f"Found potential CPI from '{var_name}': {potential_cpi}")
-                cpi_value = potential_cpi
+    if year is not None:
+        query = query.join(DimDate, FactPrices.date_id == DimDate.date_id).filter(DimDate.year == year)
+    if region and region != 'All':
+        query = query.join(DimGeography, FactPrices.province_id == DimGeography.geo_id).filter(DimGeography.province == region)
+
+    rows = query.filter(FactPrices.value.isnot(None)).all()
+    cpi_values, inflation_values, food_values = [], [], []
+    for row in rows:
+        name = _norm(row.variable_name)
+        try:
+            value = float(row.value)
+        except (TypeError, ValueError):
+            continue
+        if 'cpi' in name or 'index' in name:
+            cpi_values.append(value)
+        if 'inflation' in name or 'mom' in name or 'yoy' in name:
+            inflation_values.append(value)
+        if 'food' in name:
+            food_values.append(value)
+
+    cpi_value = (sum(cpi_values) / len(cpi_values)) if cpi_values else 0.0
+    inflation_rate = (sum(inflation_values) / len(inflation_values)) if inflation_values else 0.0
+    food_cpi = (sum(food_values) / len(food_values)) if food_values else 0.0
     
     result = {
         'cpi': cpi_value,
@@ -288,9 +242,6 @@ def query_prices_kpis_fact(filters=None):
         'food': food_cpi
     }
     
-    print(f"Prices KPI result: {result}")
-    print("=== END PRICES KPI INVESTIGATION ===\n")
-    
     return result
 
 def query_gdp_kpis_fact(filters=None):
@@ -298,63 +249,41 @@ def query_gdp_kpis_fact(filters=None):
     if filters is None:
         filters = {}
     
-    print("=== GDP KPI INVESTIGATION ===")
-    
-    year = filters.get('year')
-    
-    # Base query
+    year = _safe_year(filters.get('year'))
+    region = filters.get('region')
+
     query = db.session.query(FactNationalAccounts)
-    
-    # Apply year filter
-    if year:
-        query = query.join(DimDate).filter(DimDate.year == int(float(year)))
-    
-    # First, let's see what variable names actually exist
-    all_records = query.all()
-    variable_names = set([record.variable_name for record in all_records])
-    print(f"Available variable names in fact_national_accounts: {variable_names}")
-    
-    # Initialize KPI values
-    gdp_total = 0
-    gdp_growth = 0
-    gdp_per_capita = 0
-    agriculture_value = 0
-    
-    # Calculate GDP from available variables
-    for var_name in variable_names:
-        if var_name == 'gdp_at_market_prices' or var_name == 'gdp_at_basic_prices':
-            records = query.filter(FactNationalAccounts.variable_name == var_name).all()
-            if records:
-                gdp_total = sum([float(row.value) for row in records if row.value])
-                print(f"Found GDP from '{var_name}': {gdp_total}")
-                break
-        
-        elif var_name == 'gdp_per_capita':
-            records = query.filter(FactNationalAccounts.variable_name == var_name).all()
-            if records:
-                gdp_per_capita = sum([float(row.value) for row in records if row.value])
-                print(f"Found GDP per capita from '{var_name}': {gdp_per_capita}")
-        
-        elif var_name == 'agriculture_forestry_and_fishing':
-            records = query.filter(FactNationalAccounts.variable_name == var_name).all()
-            if records:
-                agriculture_value += sum([float(row.value) for row in records if row.value])
-                print(f"Found agriculture value from '{var_name}': {agriculture_value}")
-        
-        elif var_name == 'population_absolute_figures':
-            records = query.filter(FactNationalAccounts.variable_name == var_name).all()
-            if records and gdp_total > 0:
-                population = sum([float(row.value) for row in records if row.value])
-                gdp_per_capita = gdp_total / population if population > 0 else 0
-                print(f"Calculated GDP per capita from GDP {gdp_total} / population {population} = {gdp_per_capita}")
-        
-        # Also check for any GDP-related variables
-        elif 'gdp' in var_name.lower() and gdp_total == 0:
-            records = query.filter(FactNationalAccounts.variable_name == var_name).all()
-            if records:
-                gdp_total = sum([float(row.value) for row in records if row.value])
-                print(f"Found GDP from alternative variable '{var_name}': {gdp_total}")
-                break
+    if year is not None:
+        query = query.join(DimDate, FactNationalAccounts.date_id == DimDate.date_id).filter(DimDate.year == year)
+    if region and region != 'All':
+        query = query.join(DimGeography, FactNationalAccounts.province_id == DimGeography.geo_id).filter(DimGeography.province == region)
+
+    rows = query.filter(FactNationalAccounts.value.isnot(None)).all()
+    gdp_total = 0.0
+    gdp_growth = 0.0
+    gdp_per_capita = 0.0
+    agriculture_value = 0.0
+    population = 0.0
+
+    for row in rows:
+        name = _norm(row.variable_name)
+        try:
+            value = float(row.value)
+        except (TypeError, ValueError):
+            continue
+        if 'growth' in name:
+            gdp_growth = value
+        if 'per_capita' in name:
+            gdp_per_capita = value
+        if 'agric' in name:
+            agriculture_value += value
+        if 'population' in name:
+            population += value
+        if 'gdp' in name and 'growth' not in name and 'per_capita' not in name and 'share' not in name:
+            gdp_total += value
+
+    if gdp_per_capita == 0 and gdp_total > 0 and population > 0:
+        gdp_per_capita = gdp_total / population
     
     # Calculate agriculture share
     agri_share = (agriculture_value / gdp_total * 100) if gdp_total > 0 else 15.0
@@ -366,9 +295,6 @@ def query_gdp_kpis_fact(filters=None):
         'agri_share': agri_share
     }
     
-    print(f"GDP KPI result: {result}")
-    print("=== END GDP KPI INVESTIGATION ===\n")
-    
     return result
 
 def query_trade_kpis_fact(filters=None):
@@ -376,46 +302,33 @@ def query_trade_kpis_fact(filters=None):
     if filters is None:
         filters = {}
     
-    print("=== TRADE KPI INVESTIGATION ===")
-    
-    year = filters.get('year')
-    
-    # Base query
+    year = _safe_year(filters.get('year'))
+    region = filters.get('region')
+
     query = db.session.query(FactTrade)
-    
-    # Apply year filter
-    if year:
-        query = query.join(DimDate).filter(DimDate.year == int(float(year)))
-    
-    # First, let's see what variable names actually exist
-    all_records = query.all()
-    variable_names = set([record.variable_name for record in all_records])
-    print(f"Available variable names in fact_trade: {variable_names}")
-    
-    # Initialize KPI values
-    exports_total = 0
-    imports_total = 0
-    trade_balance = 0
-    
-    # Calculate from available variables
-    for var_name in variable_names:
-        if 'export' in var_name.lower():
-            records = query.filter(FactTrade.variable_name == var_name).all()
-            if records:
-                exports_total += sum([float(row.value) for row in records if row.value])
-                print(f"Found exports from '{var_name}': {exports_total}")
-        
-        elif 'import' in var_name.lower():
-            records = query.filter(FactTrade.variable_name == var_name).all()
-            if records:
-                imports_total += sum([float(row.value) for row in records if row.value])
-                print(f"Found imports from '{var_name}': {imports_total}")
-        
-        elif 'trade_balance' in var_name.lower() or 'balance' in var_name.lower():
-            records = query.filter(FactTrade.variable_name == var_name).all()
-            if records:
-                trade_balance = sum([float(row.value) for row in records if row.value])
-                print(f"Found trade balance from '{var_name}': {trade_balance}")
+    if year is not None:
+        query = query.join(DimDate, FactTrade.date_id == DimDate.date_id).filter(DimDate.year == year)
+    if region and region != 'All':
+        query = query.join(DimGeography, FactTrade.country_id == DimGeography.geo_id).filter(
+            (DimGeography.country == region) | (DimGeography.province == region)
+        )
+
+    rows = query.filter(FactTrade.value.isnot(None)).all()
+    exports_total = 0.0
+    imports_total = 0.0
+    trade_balance = 0.0
+    for row in rows:
+        name = _norm(row.variable_name)
+        try:
+            value = float(row.value)
+        except (TypeError, ValueError):
+            continue
+        if 'balance' in name:
+            trade_balance += value
+        elif 'export' in name:
+            exports_total += value
+        elif 'import' in name:
+            imports_total += value
     
     # Calculate net balance if not directly available
     if trade_balance == 0:
@@ -427,9 +340,6 @@ def query_trade_kpis_fact(filters=None):
         'balance': trade_balance,  # Changed from 'trade_balance' to 'balance'
         'cover': (exports_total / imports_total * 100) if imports_total > 0 else 0  # Calculate cover ratio
     }
-    
-    print(f"Trade KPI result: {result}")
-    print("=== END TRADE KPI INVESTIGATION ===\n")
     
     return result
 
